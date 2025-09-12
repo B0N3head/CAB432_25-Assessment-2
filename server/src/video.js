@@ -1,0 +1,129 @@
+import { spawn } from 'child_process'
+import path from 'path'
+import fs from 'fs'
+
+export function execCmd(cmd, args){
+  return new Promise((resolve, reject)=> {
+    const child = spawn(cmd, args, { stdio:['ignore','pipe','pipe'] })
+    let stdout='', stderr=''
+    child.stdout.on('data', d=> stdout += d.toString())
+    child.stderr.on('data', d=> stderr += d.toString())
+    child.on('error', reject)
+    child.on('close', code=> {
+      if (code === 0) resolve({ code, stdout, stderr })
+      else reject(new Error(`cmd failed (${code}): ${stderr}`))
+    })
+  })
+}
+
+export async function probeMedia(filepath){
+  try {
+    const { stdout } = await execCmd('ffprobe', ['-v','quiet','-print_format','json','-show_format','-show_streams', filepath])
+    return JSON.parse(stdout)
+  } catch (e) { return null }
+}
+
+export async function generateThumbnail(inputPath, outPath){
+  await execCmd('ffmpeg', ['-y','-ss','1.0','-i',inputPath,'-frames:v','1', outPath])
+}
+
+// Build an ffmpeg command that composes tracks by z-order (higher video tracks overlay on top).
+export async function buildFfmpegCommand(project, files, options){
+  const { width=1920, height=1080, fps=30, tracks=[] } = project
+  const { preset='crispstream', renditions=['1080p'] } = options || {}
+
+  const videoClips = []
+  const audioClips = []
+  for (const t of tracks){
+    for (const c of t.clips){
+      const f = files.find(x=> x.id===c.fileId)
+      if (!f) continue
+      const clip = { ...c, path: f.path, mimetype: f.mimetype, name:f.name }
+      if (t.type==='video') videoClips.push(clip)
+      else if (t.type==='audio') audioClips.push(clip)
+    }
+  }
+
+  let duration = 10
+  for (const c of [...videoClips, ...audioClips]){
+    duration = Math.max(duration, c.start + (c.out - c.in))
+  }
+  duration = Math.ceil(duration + 1)
+
+  // Input 0: color background
+  const inputArgs = ['-f','lavfi','-t', String(duration), '-r', String(fps), '-i', `color=c=black:s=${width}x${height}`]
+  const filterGraphParts = []
+  let vi = 1
+  // We'll set the starting audio input index after pushing all video inputs
+  let ai
+  const vlabels = []
+  const alabels = []
+
+  for (const clip of videoClips){
+    inputArgs.push('-i', clip.path)
+    const vlabel = `v${vi}`
+    filterGraphParts.push(`[${vi}:v]trim=start=${clip.in}:end=${clip.out},setpts=PTS-STARTPTS,scale=${width}:${height},format=yuva420p,setpts=PTS+${clip.start}/TB[${vlabel}]`)
+    vlabels.push(vlabel)
+    vi += 1
+  }
+
+  // Audio inputs follow video inputs, so start audio index at the next available input index
+  ai = vi
+
+  let last = '0:v'
+  let count = 1
+  for (const vlabel of vlabels){
+    const out = `base${count}`
+    // Do not use shortest=1; keep background duration as the full project duration
+    filterGraphParts.push(`[${last}][${vlabel}]overlay=format=auto[${out}]`)
+    last = out
+    count += 1
+  }
+  const vOutLabel = last
+
+  for (const clip of audioClips){
+    inputArgs.push('-i', clip.path)
+    const alabel = `a${ai}`
+    const delayMs = Math.max(0, Math.floor(clip.start*1000))
+    // Apply delay to all channels; use all=1 to replicate delay across channels
+    filterGraphParts.push(`[${ai}:a]atrim=start=${clip.in}:end=${clip.out},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1[${alabel}]`)
+    alabels.push(alabel)
+    ai += 1
+  }
+
+  if (alabels.length>0){
+    filterGraphParts.push(`${alabels.map(x=>`[${x}]`).join('')}amix=inputs=${alabels.length}:normalize=0[aout]`)
+  }
+
+  const filtergraph = filterGraphParts.join(';')
+
+  // Choose encoder speed/quality
+  let presetName = 'medium'
+  let crf = 20
+
+  // If user has selected a different preset, use the corresponding crf
+  if (preset === 'fast') { presetName = 'veryfast'; crf = 23 }
+  else if (preset === 'quality') { presetName = 'veryslow'; crf = 18 }
+
+  const vcodec = ['-c:v','libx264','-preset', presetName, '-crf', String(crf), '-pix_fmt','yuv420p']
+  const acodec = ['-c:a','aac','-b:a','192k']
+
+  const args = []
+  args.push(...inputArgs)
+  args.push('-filter_complex', filtergraph)
+  args.push('-map', `[${vOutLabel}]`)
+  if (alabels.length>0) {
+    args.push('-map', '[aout]')
+    args.push(...acodec)
+  } else {
+    // No audio inputs; explicitly disable audio to avoid codec option errors
+    args.push('-an')
+  }
+  args.push(...vcodec, '-movflags','+faststart')
+  return args
+}
+
+export async function execFfmpeg(args, outPath){
+  const finalArgs = ['-hide_banner', ...args, '-y', outPath]
+  return execCmd('ffmpeg', finalArgs)
+}
