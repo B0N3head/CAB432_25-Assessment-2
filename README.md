@@ -1,5 +1,5 @@
 # Video Editor
-
+ 
 Current features
 - Upload multiple media files (video/audio).
 - Arrange clips into tracks (V1..Vn / A1..An) onto a timeline
@@ -15,12 +15,12 @@ Requirements: Node 20+, ffmpeg (added to path)
 # 1) Server
 cd server
 cp .env.example .env
-npm ci
+npm i
 npm run dev        # http://localhost:3000
 
 # 2) Client
 cd ../client
-npm ci
+npm i
 npm run dev        # http://localhost:5173 (Vite)
 # In dev, set VITE_API_BASE in client/.env to point to your server if needed (default: http://localhost:3000)
 ```
