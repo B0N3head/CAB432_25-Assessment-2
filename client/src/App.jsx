@@ -14,6 +14,7 @@ export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '')
   const [user, setUser] = useState(null)
   const [view, setView] = useState('login') // 'login' | 'editor'
+  const [serverConfig, setServerConfig] = useState({ features:{}, cognito:{}, s3:{} })
   const [files, setFiles] = useState([])
   const [project, setProject] = useState(null)
   const [projects, setProjects] = useState([])
@@ -35,7 +36,22 @@ export default function App() {
   const [timelineHeight, setTimelineHeight] = useState(180)
   const resizingRef = useRef(null)
 
+  // Load server config and handle Cognito redirect tokens
   useEffect(() => {
+    fetch(`${API}/api/v1/config`).then(r=>r.json()).then(setServerConfig).catch(()=>{})
+
+    // Parse Cognito Hosted UI implicit flow tokens from hash
+    if (location.hash && location.hash.includes('id_token')) {
+      const params = new URLSearchParams(location.hash.replace(/^#/, ''))
+      const idToken = params.get('id_token')
+      if (idToken) {
+        const tk = `Bearer ${idToken}`
+        localStorage.setItem('token', tk)
+        setToken(tk)
+        history.replaceState(null, '', location.pathname)
+      }
+    }
+
     if (!token) return
     try {
       const u = jwtDecode(token.split(' ')[1] || token)
@@ -57,6 +73,16 @@ export default function App() {
     const tk = `Bearer ${data.token}`
     localStorage.setItem('token', tk)
     setToken(tk)
+  }
+
+  const loginWithCognito = () => {
+    const domain = serverConfig?.cognito?.domain
+    const clientId = serverConfig?.cognito?.clientId
+    if (!domain || !clientId) { alert('Cognito not configured'); return }
+    const redirectUri = encodeURIComponent(window.location.origin)
+    const scope = encodeURIComponent('openid email profile')
+    const url = `${domain}/oauth2/authorize?client_id=${clientId}&response_type=token&scope=${scope}&redirect_uri=${redirectUri}`
+    window.location.href = url
   }
 
   const logout = () => { localStorage.removeItem('token'); setToken(''); setUser(null); setView('login') }
@@ -85,10 +111,35 @@ export default function App() {
   }
 
   const onUpload = async (e) => {
-    const form = new FormData()
-    for (const f of e.target.files) form.append('files', f)
-    const res = await fetch(`${API}/api/v1/files`, { method:'POST', headers:{ 'Authorization': token }, body: form })
-    if (res.ok) { fetchFiles() }
+    const useS3 = !!serverConfig?.features?.useS3
+    const selected = Array.from(e.target.files || [])
+    if (selected.length === 0) return
+    if (!useS3) {
+      const form = new FormData()
+      for (const f of selected) form.append('files', f)
+      const res = await fetch(`${API}/api/v1/files`, { method:'POST', headers:{ 'Authorization': token }, body: form })
+      if (res.ok) { fetchFiles() }
+      return
+    }
+    // S3 presigned path
+    for (const f of selected) {
+      const presignRes = await fetch(`${API}/api/v1/files/presign-upload`, {
+        method:'POST',
+        headers:{ 'Authorization': token, 'Content-Type':'application/json' },
+        body: JSON.stringify({ filename: f.name, contentType: f.type || 'application/octet-stream' })
+      })
+      if (!presignRes.ok) { alert('Failed to get presigned URL'); return }
+      const presigned = await presignRes.json()
+      const putRes = await fetch(presigned.url, { method:'PUT', headers:{ 'Content-Type': f.type || 'application/octet-stream' }, body: f })
+      if (!putRes.ok) { alert('Upload to S3 failed'); return }
+      const regRes = await fetch(`${API}/api/v1/files/register`, {
+        method:'POST',
+        headers:{ 'Authorization': token, 'Content-Type':'application/json' },
+        body: JSON.stringify({ id: presigned.id, originalName: f.name, key: presigned.key, mimetype: f.type })
+      })
+      if (!regRes.ok) { alert('Register file failed'); return }
+    }
+    fetchFiles()
   }
 
   const addClip = (trackIndex, file) => {
@@ -152,7 +203,18 @@ export default function App() {
     if (!project) return
     setStatus('Rendering...')
     const res = await authFetch(`${API}/api/v1/projects/${project.id}/render`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ preset, renditions:['1080p'] }) })
-    if (res?.output) setStatus(`Done: ${API}${res.output}`); else setStatus('Render started / queued')
+    if (res?.job?.id) {
+      const id = res.job.id
+      setStatus(`Render started (job ${id})`)
+      const tk = (token || '').replace(/^Bearer\s+/, '')
+      const ev = new EventSource(`${API}/api/v1/jobs/${id}/events?token=${encodeURIComponent(tk)}`)
+      ev.addEventListener('progress', (msg)=> {
+        try { const data = JSON.parse(msg.data); setStatus(`Rendering... ${data.time || ''}`) } catch {}
+      })
+      ev.addEventListener('ping', ()=>{/*keep alive*/})
+      ev.onerror = ()=> { ev.close() }
+    }
+    if (res?.output) setStatus(`Done: ${API}${res.output}`)
   }
 
   const pxPerSec = zoom
@@ -174,9 +236,15 @@ export default function App() {
       </header>
       <div style={{display:'grid', placeItems:'center'}}>
         <div style={{display:'flex', gap:12, padding:24}}>
-          <input id="u" placeholder="username" />
-          <input id="p" placeholder="password" type="password"/>
-          <button className="btn" onClick={()=>login(document.getElementById('u').value, document.getElementById('p').value)}>Login</button>
+          {serverConfig?.features?.useCognito ? (
+            <button className="btn" onClick={loginWithCognito}>Login with Cognito</button>
+          ) : (
+            <>
+              <input id="u" placeholder="username" />
+              <input id="p" placeholder="password" type="password"/>
+              <button className="btn" onClick={()=>login(document.getElementById('u').value, document.getElementById('p').value)}>Login</button>
+            </>
+          )}
         </div>
       </div>
     </div>

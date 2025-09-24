@@ -7,15 +7,32 @@ import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
 import { getDB, saveDB } from './storage.js'
 import { users, signToken, authMiddleware, requireRole } from './security.js'
-import { probeMedia, generateThumbnail, buildFfmpegCommand, execFfmpeg } from './video.js'
+import { probeMedia, generateThumbnail, buildFfmpegCommand, execFfmpeg, execFfmpegWithProgress } from './video.js'
+import config from './config.js'
+import { authMiddlewareCognito } from './cognito.js'
+import { presignUpload, presignDownload } from './s3.js'
+import { cacheGet, cacheSet } from './cache.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 export const router = express.Router()
 
+// Decide auth middleware: Cognito if configured, else legacy JWT
+const auth = config.features.useCognito ? authMiddlewareCognito() : authMiddleware
+
 // ---- On-the-fly low-res preview proxy for uploaded media ----
 // Scales maintaining aspect ratio, targeting 640x360 by default.
-router.get('/preview', authMiddleware, async (req,res)=> {
+// Public config for client feature toggles
+router.get('/config', (_, res)=> {
+  res.json({
+    region: config.region,
+    features: config.features,
+    cognito: { domain: config.cognito.domain, clientId: config.cognito.clientId, userPoolId: !!config.cognito.userPoolId ? 'configured' : '' },
+    s3: { bucket: config.s3.bucket, prefixes: { uploads: config.s3.uploadsPrefix, outputs: config.s3.outputsPrefix, thumbs: config.s3.thumbsPrefix } }
+  })
+})
+
+router.get('/preview', auth, async (req,res)=> {
   try {
     const { fileId, h = 360 } = req.query
     if (!fileId) return res.status(400).json({ error: 'fileId required' })
@@ -26,8 +43,15 @@ router.get('/preview', authMiddleware, async (req,res)=> {
 
     res.setHeader('Content-Type','video/mp4')
     const height = Math.max(120, parseInt(h))
+    // Determine ffmpeg input (local file path or presigned S3 URL)
+    let input = f.path
+    if (!input && f.s3Key && config.features.useS3) {
+      const { url } = await presignDownload({ key: f.s3Key })
+      input = url
+    }
+    if (!input) return res.status(404).json({ error:'input not available' })
     const child = await import('child_process').then(m=> m.spawn('ffmpeg', [
-      '-hide_banner','-loglevel','error','-i', f.path,
+      '-hide_banner','-loglevel','error','-i', input,
       // keep aspect ratio, constrain height; width auto (-2) preserves mod2
       '-vf', `scale=-2:${height}`,
       '-an',
@@ -47,6 +71,7 @@ router.get('/preview', authMiddleware, async (req,res)=> {
 })
 
 // ---- Auth ----
+// Legacy login only used in local dev without Cognito
 router.post('/auth/login', (req,res)=> {
   const { username, password } = req.body || {}
   const u = users.find(u=> u.username===username && u.password===password)
@@ -71,16 +96,22 @@ const storage = multer.diskStorage({
 const upload = multer({ storage })
 
 // ---- Files ----
-router.get('/files', authMiddleware, (req,res)=> {
-  const db = getDB()
-  const { page=1, limit=50, owner='me' } = req.query
-  const items = db.files.filter(f=> req.user.role==='admin' || f.ownerId===req.user.id)
+router.get('/files', auth, async (req,res)=> {
+  const { page=1, limit=50 } = req.query
   const p = parseInt(page), l = parseInt(limit)
+  const key = `files:${req.user.id}:${p}:${l}`
+  const cached = await cacheGet(key)
+  if (cached) return res.json(cached)
+  const db = getDB()
+  const items = db.files.filter(f=> req.user.role==='admin' || f.ownerId===req.user.id)
   const slice = items.slice((p-1)*l, p*l)
-  res.json({ items: slice, total: items.length, page:p, limit:l })
+  const payload = { items: slice, total: items.length, page:p, limit:l }
+  res.json(payload)
+  cacheSet(key, payload, 120).catch(()=>{})
 })
 
-router.post('/files', authMiddleware, upload.array('files', 20), async (req,res)=> {
+// If S3 is configured, prefer presigned uploads from client
+router.post('/files', auth, upload.array('files', 20), async (req,res)=> {
   const db = getDB()
   const saved = []
   for (const file of req.files) {
@@ -108,17 +139,61 @@ router.post('/files', authMiddleware, upload.array('files', 20), async (req,res)
   res.status(201).json({ items: saved })
 })
 
-// ---- Projects ----
-router.get('/projects', authMiddleware, (req,res)=> {
-  const db = getDB()
-  const items = db.projects.filter(p=> req.user.role==='admin' || p.ownerId===req.user.id)
-  const { page=1, limit=50 } = req.query
-  const p = parseInt(page), l = parseInt(limit)
-  const slice = items.slice((p-1)*l, p*l)
-  res.json({ items: slice, total: items.length, page:p, limit:l })
+// S3 presign endpoints (used when client uploads directly to S3)
+router.post('/files/presign-upload', auth, async (req,res)=> {
+  if (!config.features.useS3) return res.status(400).json({ error: 'S3 not configured' })
+  const { filename, contentType } = req.body || {}
+  if (!filename || !contentType) return res.status(400).json({ error: 'filename and contentType required' })
+  const id = uuidv4()
+  const ext = path.extname(filename)
+  const key = `${config.s3.uploadsPrefix}${req.user.id}/${id}${ext}`
+  try {
+    const signed = await presignUpload({ key, contentType })
+    res.json({ id, key, ...signed })
+  } catch (e) { res.status(500).json({ error: 'presign failed' }) }
 })
 
-router.post('/projects', authMiddleware, (req,res)=> {
+// After successful client upload to S3, register metadata
+router.post('/files/register', auth, async (req,res)=> {
+  const { id, originalName, key, mimetype, duration } = req.body || {}
+  if (!id || !key || !mimetype) return res.status(400).json({ error: 'id, key, mimetype required' })
+  const db = getDB()
+  const rec = { id, ownerId: req.user.id, s3Key: key, name: originalName || id, mimetype, createdAt: Date.now() }
+  if (duration) rec.duration = duration
+  // Optional generate thumbnail by downloading from S3 – skipped here for simplicity
+  db.files.push(rec); saveDB(db)
+  res.status(201).json(rec)
+})
+
+// Generate a presigned download URL for a file
+router.get('/files/:id/presign-download', auth, async (req,res)=> {
+  const db = getDB()
+  const f = db.files.find(x=> x.id === req.params.id)
+  if (!f) return res.status(404).json({ error: 'not found' })
+  if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
+  if (!f.s3Key || !config.features.useS3) return res.status(400).json({ error: 'not stored in S3' })
+  try {
+    const { url } = await presignDownload({ key: f.s3Key })
+    res.json({ url })
+  } catch (e) { res.status(500).json({ error: 'presign failed' }) }
+})
+
+// ---- Projects ----
+router.get('/projects', auth, async (req,res)=> {
+  const { page=1, limit=50 } = req.query
+  const p = parseInt(page), l = parseInt(limit)
+  const key = `projects:${req.user.id}:${p}:${l}`
+  const cached = await cacheGet(key)
+  if (cached) return res.json(cached)
+  const db = getDB()
+  const items = db.projects.filter(p=> req.user.role==='admin' || p.ownerId===req.user.id)
+  const slice = items.slice((p-1)*l, p*l)
+  const payload = { items: slice, total: items.length, page:p, limit:l }
+  res.json(payload)
+  cacheSet(key, payload, 120).catch(()=>{})
+})
+
+router.post('/projects', auth, (req,res)=> {
   const { name, width=1920, height=1080, fps=30 } = req.body || {}
   if (!name) return res.status(400).json({ error:'name required' })
   const db = getDB()
@@ -130,7 +205,7 @@ router.post('/projects', authMiddleware, (req,res)=> {
   res.status(201).json(proj)
 })
 
-router.get('/projects/:id', authMiddleware, (req,res)=> {
+router.get('/projects/:id', auth, (req,res)=> {
   const db = getDB()
   const proj = db.projects.find(p=> p.id===req.params.id)
   if (!proj) return res.status(404).json({ error:'not found' })
@@ -138,7 +213,7 @@ router.get('/projects/:id', authMiddleware, (req,res)=> {
   res.json(proj)
 })
 
-router.put('/projects/:id', authMiddleware, (req,res)=> {
+router.put('/projects/:id', auth, (req,res)=> {
   const db = getDB()
   const idx = db.projects.findIndex(p=> p.id===req.params.id)
   if (idx<0) return res.status(404).json({ error:'not found' })
@@ -149,7 +224,7 @@ router.put('/projects/:id', authMiddleware, (req,res)=> {
 })
 
 // ---- Render ----
-router.post('/projects/:id/render', authMiddleware, async (req,res)=> {
+router.post('/projects/:id/render', auth, async (req,res)=> {
   const db = getDB()
   const proj = db.projects.find(p=> p.id===req.params.id)
   if (!proj) return res.status(404).json({ error:'not found' })
@@ -168,7 +243,7 @@ router.post('/projects/:id/render', authMiddleware, async (req,res)=> {
   try {
     console.log('ffmpeg args:', cmd.join(' '))
     console.log('render output path:', outPath)
-    const { code, stderr } = await execFfmpeg(cmd, outPath)
+    const { code, stderr } = await execFfmpegWithProgress(cmd, outPath, outId)
     const job = { id: outId, projectId: proj.id, ownerId: proj.ownerId, output: `/media/outputs/${outName}`, createdAt: Date.now(), code, stderr }
     db.jobs.push(job); saveDB(db)
     res.status(201).json({ output: job.output, job })
@@ -176,6 +251,31 @@ router.post('/projects/:id/render', authMiddleware, async (req,res)=> {
     console.error('render error', e)
     res.status(500).json({ error:'render failed', detail: e.message })
   }
+})
+
+// SSE progress endpoint
+router.get('/jobs/:id/events', auth, async (req,res)=> {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const id = req.params.id
+  let alive = true
+  req.on('close', ()=> { alive = false })
+  const send = (event, data) => {
+    if (!alive) return
+    res.write(`event: ${event}\n`)
+    res.write(`data: ${JSON.stringify(data)}\n\n`)
+  }
+  // Initial push from cache if present
+  const state = await cacheGet(`job:${id}`)
+  if (state) send('progress', state)
+  // Heartbeat to keep connection alive
+  const iv = setInterval(async ()=> {
+    if (!alive) { clearInterval(iv); return }
+    const s = await cacheGet(`job:${id}`)
+    if (s) send('progress', s)
+    else send('ping', { t: Date.now() })
+  }, 2000)
 })
 
 export default router

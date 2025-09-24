@@ -23,9 +23,6 @@ for (const p of ['data', 'data/uploads', 'data/outputs', 'data/thumbnails']) {
   if (!fs.existsSync(full)) fs.mkdirSync(full, { recursive:true })
 }
 
-// Static client
-app.use(express.static(path.join(__dirname, '..', 'public')))
-
 // Media serving (authenticated paths also available via API meta)
 app.use('/media/uploads', express.static(path.join(__dirname, '..', 'data', 'uploads')))
 app.use('/media/outputs', express.static(path.join(__dirname, '..', 'data', 'outputs')))
@@ -35,6 +32,9 @@ app.use('/media/thumbnails', express.static(path.join(__dirname, '..', 'data', '
 app.use('/api/v1', router)
 
 app.get('/api/v1/health', (_,res)=> res.json({ ok:true }))
+
+// Static client
+app.use(express.static(path.join(__dirname, '..', 'public')))
 
 // Fallback to SPA
 app.get('*', (req,res)=> {

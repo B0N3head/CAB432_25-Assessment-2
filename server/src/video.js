@@ -1,4 +1,5 @@
 import { spawn } from 'child_process'
+import { cacheSet } from './cache.js'
 import path from 'path'
 import fs from 'fs'
 
@@ -126,4 +127,28 @@ export async function buildFfmpegCommand(project, files, options){
 export async function execFfmpeg(args, outPath){
   const finalArgs = ['-hide_banner', ...args, '-y', outPath]
   return execCmd('ffmpeg', finalArgs)
+}
+
+// Execute ffmpeg with progress parsing and store to cache under jobId
+export function execFfmpegWithProgress(args, outPath, jobId) {
+  return new Promise((resolve, reject) => {
+    const finalArgs = ['-hide_banner', ...args, '-y', outPath]
+    const child = spawn('ffmpeg', finalArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stderr = ''
+    child.stderr.on('data', async (d) => {
+      const s = d.toString()
+      stderr += s
+      // Basic parse: look for frame / time / speed
+      const m = s.match(/time=([\d:.]+)/)
+      if (m && jobId) {
+        await cacheSet(`job:${jobId}`, { status: 'running', time: m[1], updatedAt: Date.now() }, 300)
+      }
+    })
+    child.on('error', reject)
+    child.on('close', async (code) => {
+      if (jobId) await cacheSet(`job:${jobId}`, { status: code === 0 ? 'done' : 'error', code, updatedAt: Date.now() }, 600)
+      if (code === 0) resolve({ code, stderr })
+      else reject(new Error(`ffmpeg failed (${code})`))
+    })
+  })
 }
