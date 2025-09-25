@@ -1,0 +1,92 @@
+name: Build and Deploy (EC2 Docker)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write   # For OIDC (recommended). Remove if using static AWS keys.
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  IMAGE_NAME: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        if: env.AWS_ACCOUNT_ID != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          role-session-name: github-actions-deploy
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        run: |
+          docker build -t $IMAGE_NAME:latest .
+          SHORT_SHA="${GITHUB_SHA::7}"; docker tag $IMAGE_NAME:latest $IMAGE_NAME:sha-$SHORT_SHA
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+
+      - name: Push image
+        run: |
+          docker push $IMAGE_NAME:latest
+          docker push $IMAGE_NAME:sha-$SHORT_SHA
+
+      - name: Upload artifact (optional SBOM or digest)
+        run: docker inspect $IMAGE_NAME:latest --format='{{json .Id}}'
+
+  deploy-ec2:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for script templating)
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > id_rsa
+          chmod 600 id_rsa
+
+      - name: Deploy via SSH
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          IMAGE: ${{ env.IMAGE_NAME }}:latest
+        run: |
+          ssh -o StrictHostKeyChecking=no -i id_rsa $USER@$HOST "bash -s" <<'EOF'
+          set -e
+          if [ ! -f /opt/vid-editor/pull-and-restart.sh ]; then
+            echo "pull-and-restart.sh not found; creating placeholder."
+            cat >/opt/vid-editor/pull-and-restart.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -e
+          IMG="$1"
+          [ -z "$IMG" ] && echo "Image ref required" && exit 1
+          docker pull "$IMG"
+          docker rm -f vid-editor 2>/dev/null || true
+          docker run -d --name vid-editor --env-file /opt/vid-editor/.env -p 80:3000 "$IMG"
+          SCRIPT
+            chmod +x /opt/vid-editor/pull-and-restart.sh
+          fi
+          /opt/vid-editor/pull-and-restart.sh "$IMAGE"
+          EOF
+
+      - name: Smoke test
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          sleep 5
+          curl -fsS http://$HOST/api/v1/health || (echo 'Health check failed' && exit 1)

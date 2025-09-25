@@ -1,0 +1,25 @@
+version: '3.9'
+
+# Runtime-only compose: container runs server directly from mounted source.
+# Client is built on the host by the update script and its dist is mounted as public assets.
+services:
+  api:
+    image: node:20-bookworm-slim
+    container_name: video-editor-api
+    working_dir: /workspace/server
+    volumes:
+      - ./server:/workspace/server
+      - ./client/dist:/workspace/server/public
+    # Install ffmpeg & run server. For faster restarts you can bake a custom image later.
+    command: bash -lc "apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/* && node src/index.js"
+    env_file:
+      - ./server/.env
+    ports:
+      - "80:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
