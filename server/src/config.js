@@ -70,6 +70,8 @@ export async function loadConfig() {
     clientId: getEnv('COGNITO_CLIENT_ID', ''),
     domain: getEnv('COGNITO_DOMAIN', ''),
     clientSecret: getEnv('COGNITO_CLIENT_SECRET', ''),
+    // Optional explicit redirect URI (helps avoid redirect_mismatch if provided)
+    redirectUri: getEnv('COGNITO_REDIRECT_URI', '')
   }
   // S3
   cfg.s3 = {
@@ -117,10 +119,14 @@ export async function loadConfig() {
     secretPromises.push(
       getSecretValue(jwtSecretName, { fallback: null })
         .then(val => {
-          if (val) cfg.jwtSecret = parseSecretJson(val, 'jwtSecret', val)
-          console.log('✓ JWT secret loaded from Secrets Manager')
+          if (val) {
+            cfg.jwtSecret = parseSecretJson(val, 'jwtSecret', val)
+            console.log('✓ JWT secret loaded from Secrets Manager')
+          } else {
+            console.warn('JWT secret not loaded (using fallback)')
+          }
         })
-        .catch(() => console.warn('⚠ Failed to load JWT secret from Secrets Manager'))
+        .catch(() => console.warn('Failed to load JWT secret from Secrets Manager'))
     )
   }
 
@@ -130,10 +136,14 @@ export async function loadConfig() {
     secretPromises.push(
       getSecretValue(cognitoSecretName, { fallback: null })
         .then(val => {
-          if (val) cfg.cognito.clientSecret = parseSecretJson(val, 'clientSecret', val)
-          console.log('✓ Cognito client secret loaded from Secrets Manager')
+          if (val) {
+            cfg.cognito.clientSecret = parseSecretJson(val, 'clientSecret', val)
+            console.log('✓ Cognito client secret loaded from Secrets Manager')
+          } else {
+            console.warn('Cognito client secret not loaded (no secret value)')
+          }
         })
-        .catch(() => console.warn('⚠ Failed to load Cognito secret from Secrets Manager'))
+        .catch(() => console.warn('Failed to load Cognito secret from Secrets Manager'))
     )
   }
 
@@ -151,9 +161,11 @@ export async function loadConfig() {
               region: parsed.region || cfg.region
             }
             console.log('✓ Database credentials loaded from Secrets Manager')
+          } else {
+            console.warn('Database credentials secret empty or missing')
           }
         })
-        .catch(() => console.warn('⚠ Failed to load database credentials from Secrets Manager'))
+        .catch(() => console.warn('Failed to load database credentials from Secrets Manager'))
     )
   }
 
@@ -171,9 +183,11 @@ export async function loadConfig() {
               notificationWebhook: parsed.notificationWebhook || ''
             }
             console.log('✓ External API credentials loaded from Secrets Manager')
+          } else {
+            console.warn('External API credentials secret empty or missing')
           }
         })
-        .catch(() => console.warn('⚠ Failed to load external API credentials from Secrets Manager'))
+        .catch(() => console.warn('Failed to load external API credentials from Secrets Manager'))
     )
   }
 
@@ -190,7 +204,7 @@ export async function loadConfig() {
     useSecretsManager: secretPromises.length > 0
   }
 
-  console.log('✓ Configuration loaded:', {
+  console.log('Configuration used this session:', {
     cognito: cfg.features.useCognito,
     s3: cfg.features.useS3,
     secrets: cfg.features.useSecretsManager,

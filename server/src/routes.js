@@ -72,6 +72,7 @@ router.get('/config', (_, res)=> {
       domain: config.cognito.domain, 
       clientId: config.cognito.clientId, 
       userPoolId: !!config.cognito.userPoolId ? 'configured' : '',
+      redirectUri: config.cognito.redirectUri || '',
       hasClientSecret: !!config.cognito.clientSecret
     },
     s3: { 

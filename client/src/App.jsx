@@ -97,7 +97,8 @@ export default function App() {
     const domain = serverConfig?.cognito?.domain
     const clientId = serverConfig?.cognito?.clientId
     if (!domain || !clientId) { alert('Cognito not configured'); return }
-    const redirectUri = encodeURIComponent(window.location.origin)
+    const configuredRedirect = serverConfig?.cognito?.redirectUri
+    const redirectUri = encodeURIComponent(configuredRedirect || window.location.origin)
     const scope = encodeURIComponent('openid email profile')
     const url = `${domain}/oauth2/authorize?client_id=${clientId}&response_type=token&scope=${scope}&redirect_uri=${redirectUri}`
     window.location.href = url
