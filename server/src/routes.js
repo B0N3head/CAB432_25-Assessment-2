@@ -17,14 +17,14 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 export const router = express.Router()
 
-// Decide auth middleware: Cognito if configured, else legacy JWT
+//auth middleware use Cognito if configured, else legacy JWT
 const auth = config.features.useCognito ? authMiddlewareCognito() : authMiddleware
 
-// ---- On-the-fly low-res preview proxy for uploaded media ----
-// Scales maintaining aspect ratio, targeting 640x360 by default.
-// Public config for client feature toggles
-router.get('/config', (_, res)=> {
-  // Get version info - prefer build-info.json if available, fallback to package.json
+// realtime low-res preview proxy for uploaded media
+// scales maintaining aspect ratio, targeting 640x360 by default.
+// public config for client feature toggles
+// Helper function to get version info
+function getVersionInfo() {
   let version = '1.0.0'
   let buildTime = new Date().toISOString()
   let gitHash = ''
@@ -44,12 +44,28 @@ router.get('/config', (_, res)=> {
       version = pkg.version || version
     } catch {}
   }
+  
+  return { version, buildTime, gitHash, deployDate }
+}
+
+// Dedicated version endpoint
+router.get('/version', (_, res)=> {
+  const versionInfo = getVersionInfo()
+  res.json({
+    server: versionInfo,
+    api: 'v1',
+    timestamp: new Date().toISOString()
+  })
+})
+
+router.get('/config', (_, res)=> {
+  const versionInfo = getVersionInfo()
 
   res.json({
-    version: version,
-    buildTime: buildTime,
-    gitHash: gitHash,
-    deployDate: deployDate,
+    version: versionInfo.version,
+    buildTime: versionInfo.buildTime,
+    gitHash: versionInfo.gitHash,
+    deployDate: versionInfo.deployDate,
     region: config.region,
     features: config.features,
     cognito: { 

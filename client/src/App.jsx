@@ -15,6 +15,7 @@ export default function App() {
   const [user, setUser] = useState(null)
   const [view, setView] = useState('login') // 'login' | 'editor'
   const [serverConfig, setServerConfig] = useState({ features:{}, cognito:{}, s3:{}, version:'', buildTime:'' })
+  const [versionInfo, setVersionInfo] = useState({ server: {}, client: {} })
   const [files, setFiles] = useState([])
   const [project, setProject] = useState(null)
   const [projects, setProjects] = useState([])
@@ -36,9 +37,26 @@ export default function App() {
   const [timelineHeight, setTimelineHeight] = useState(180)
   const resizingRef = useRef(null)
 
-  // Load server config and handle Cognito redirect tokens
+  // Load server config and version info
   useEffect(() => {
+    // Fetch server config
     fetch(`${API}/api/v1/config`).then(r=>r.json()).then(setServerConfig).catch(()=>{})
+    
+    // Fetch version info
+    Promise.all([
+      fetch(`${API}/api/v1/version`).then(r=>r.json()).catch(()=>({server:{}})),
+      // Get client version from import.meta.env or package.json
+      Promise.resolve({
+        version: import.meta.env.VITE_VERSION || '1.0.1',
+        buildTime: import.meta.env.VITE_BUILD_TIME || new Date().toISOString(),
+        gitHash: import.meta.env.VITE_GIT_HASH || ''
+      })
+    ]).then(([serverVersion, clientVersion]) => {
+      setVersionInfo({
+        server: serverVersion.server || {},
+        client: clientVersion
+      })
+    }).catch(()=>{})
 
     // Parse Cognito Hosted UI implicit flow tokens from hash
     if (location.hash && location.hash.includes('id_token')) {
@@ -247,6 +265,31 @@ export default function App() {
           )}
         </div>
       </div>
+      {/* Build date in bottom left */}
+      <div style={{
+        position: 'fixed',
+        bottom: '16px',
+        left: '16px',
+        background: 'rgba(0,0,0,0.7)',
+        color: '#fff',
+        padding: '8px 12px',
+        borderRadius: '4px',
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        zIndex: 1000,
+        border: '1px solid rgba(255,255,255,0.2)',
+        textAlign: 'left'
+      }}>
+        <div style={{ opacity: 0.9 }}>
+          {versionInfo.server?.deployDate || (
+            versionInfo.server?.buildTime ? (
+              new Date(versionInfo.server.buildTime).toLocaleDateString() + ' ' + 
+              new Date(versionInfo.server.buildTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+            ) : 'Build date unknown'
+          )}
+        </div>
+      </div>
+
       {/* Version info in bottom right */}
       <div style={{
         position: 'fixed',
@@ -263,17 +306,13 @@ export default function App() {
         textAlign: 'right'
       }}>
         <div>
-          v{serverConfig?.version || '1.0.0'}
-          {serverConfig?.gitHash && <span style={{opacity: 0.7, marginLeft: '4px'}}>({serverConfig.gitHash})</span>}
+          Server: v{versionInfo.server?.version || '1.0.0'}
+          {versionInfo.server?.gitHash && <span style={{opacity: 0.7, marginLeft: '4px'}}>({versionInfo.server.gitHash.slice(0,7)})</span>}
         </div>
-        {(serverConfig?.buildTime || serverConfig?.deployDate) && (
-          <div style={{opacity: 0.8, marginTop: '2px', fontSize: '11px'}}>
-            {serverConfig?.deployDate || (
-              new Date(serverConfig.buildTime).toLocaleDateString() + ' ' + 
-              new Date(serverConfig.buildTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-            )}
-          </div>
-        )}
+        <div style={{opacity: 0.8, marginTop: '2px'}}>
+          Client: v{versionInfo.client?.version || '1.0.1'}
+          {versionInfo.client?.gitHash && <span style={{opacity: 0.7, marginLeft: '4px'}}>({versionInfo.client.gitHash.slice(0,7)})</span>}
+        </div>
       </div>
     </div>
   )
