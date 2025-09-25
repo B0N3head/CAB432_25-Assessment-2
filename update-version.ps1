@@ -49,7 +49,9 @@ Push-Location client
 try {
     $clientPackage = Get-Content package.json | ConvertFrom-Json
     $clientPackage.version = $newVersion
-    $clientPackage | ConvertTo-Json -Depth 10 | Set-Content package.json -Encoding UTF8
+    $clientJson = $clientPackage | ConvertTo-Json -Depth 10
+    # Write JSON without BOM to prevent build issues
+    [System.IO.File]::WriteAllText((Resolve-Path "package.json"), $clientJson, [System.Text.UTF8Encoding]::new($false))
 }
 catch {
     Write-Host "Error updating client version: $_" -ForegroundColor Red
@@ -66,7 +68,8 @@ $buildInfo = @{
     gitHash = $gitHash
 } | ConvertTo-Json -Depth 10
 
-Set-Content -Path "server/build-info.json" -Value $buildInfo -Encoding UTF8
+# Write build-info.json without BOM to prevent any potential parsing issues
+[System.IO.File]::WriteAllText((Join-Path (Get-Location) "server/build-info.json"), $buildInfo, [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "Version updated to $newVersion" -ForegroundColor Green
 

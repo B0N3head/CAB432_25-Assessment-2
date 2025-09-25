@@ -51,9 +51,11 @@ export default function App() {
         buildTime: import.meta.env.VITE_BUILD_TIME || new Date().toISOString(),
         gitHash: import.meta.env.VITE_GIT_HASH || ''
       })
-    ]).then(([serverVersion, clientVersion]) => {
+    ]).then(([serverVersionResponse, clientVersion]) => {
+      // Extract server info from the response structure
+      const serverInfo = serverVersionResponse.server || serverVersionResponse || {}
       setVersionInfo({
-        server: serverVersion.server || {},
+        server: serverInfo,
         client: clientVersion
       })
     }).catch(()=>{})
