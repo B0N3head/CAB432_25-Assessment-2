@@ -4,3 +4,6 @@ server/data/
 server/.env
 client/.env
 GIT_DEPLOY.md
+SECRETS_SETUP.md
+setup-secrets.ps1
+test-secrets.ps1

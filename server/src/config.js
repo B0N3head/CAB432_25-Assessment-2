@@ -43,8 +43,20 @@ export async function getSecretValue(name, { fallback } = {}) {
     const val = res.SecretString || (res.SecretBinary ? Buffer.from(res.SecretBinary, 'base64').toString('utf8') : null)
     cache.secrets.set(name, val ?? fallback)
     return val ?? fallback
-  } catch {
+  } catch (e) {
+    console.warn(`Failed to retrieve secret ${name}:`, e.message)
     return fallback
+  }
+}
+
+// Helper to parse JSON secrets safely
+function parseSecretJson(secretString, key, fallback) {
+  try {
+    const parsed = JSON.parse(secretString)
+    return parsed[key] ?? fallback
+  } catch {
+    // If not JSON, return the raw string (backwards compatibility)
+    return secretString ?? fallback
   }
 }
 
@@ -57,6 +69,7 @@ export async function loadConfig() {
     userPoolId: getEnv('COGNITO_USER_POOL_ID', ''),
     clientId: getEnv('COGNITO_CLIENT_ID', ''),
     domain: getEnv('COGNITO_DOMAIN', ''),
+    clientSecret: getEnv('COGNITO_CLIENT_SECRET', ''),
   }
   // S3
   cfg.s3 = {
@@ -70,13 +83,12 @@ export async function loadConfig() {
     memcachedUrl: getEnv('MEMCACHED_URL', ''),
     enabled: !!getEnv('MEMCACHED_URL', '')
   }
-  // Feature flags
-  cfg.features = {
-    useCognito: !!(cfg.cognito.userPoolId && cfg.cognito.clientId),
-    useS3: !!cfg.s3.bucket,
-  }
   // JWT secret fallback (dev only)
   cfg.jwtSecret = getEnv('JWT_SECRET', 'devsecret')
+  
+  // Initialize optional configs
+  cfg.database = cfg.database || {}
+  cfg.externalApis = cfg.externalApis || {}
 
   // Overlay from SSM Parameter Store if available (non-fatal on failure)
   try {
@@ -96,14 +108,95 @@ export async function loadConfig() {
     cfg.cache.enabled = !!cfg.cache.memcachedUrl
   } catch {}
 
-  // Overlay JWT secret from Secrets Manager (optional)
-  try {
-    const secretName = getEnv('SECRETS_JWT_SECRET_NAME', '') || null
-    if (secretName) {
-      const val = await getSecretValue(secretName, { fallback: cfg.jwtSecret })
-      if (val) cfg.jwtSecret = JSON.parseCatch?.(val) ?? val
-    }
-  } catch {}
+  // Overlay secrets from Secrets Manager
+  const secretPromises = []
+  
+  // JWT secret
+  const jwtSecretName = getEnv('SECRETS_JWT_SECRET_NAME', '')
+  if (jwtSecretName) {
+    secretPromises.push(
+      getSecretValue(jwtSecretName, { fallback: null })
+        .then(val => {
+          if (val) cfg.jwtSecret = parseSecretJson(val, 'jwtSecret', val)
+          console.log('✓ JWT secret loaded from Secrets Manager')
+        })
+        .catch(() => console.warn('⚠ Failed to load JWT secret from Secrets Manager'))
+    )
+  }
+
+  // Cognito client secret
+  const cognitoSecretName = getEnv('SECRETS_COGNITO_CLIENT_SECRET_NAME', '')
+  if (cognitoSecretName) {
+    secretPromises.push(
+      getSecretValue(cognitoSecretName, { fallback: null })
+        .then(val => {
+          if (val) cfg.cognito.clientSecret = parseSecretJson(val, 'clientSecret', val)
+          console.log('✓ Cognito client secret loaded from Secrets Manager')
+        })
+        .catch(() => console.warn('⚠ Failed to load Cognito secret from Secrets Manager'))
+    )
+  }
+
+  // Database credentials (for future DynamoDB or RDS)
+  const dbSecretName = getEnv('SECRETS_DATABASE_NAME', '')
+  if (dbSecretName) {
+    secretPromises.push(
+      getSecretValue(dbSecretName, { fallback: null })
+        .then(val => {
+          if (val) {
+            const parsed = parseSecretJson(val, null, {})
+            cfg.database = {
+              accessKeyId: parsed.accessKeyId || '',
+              secretAccessKey: parsed.secretAccessKey || '',
+              region: parsed.region || cfg.region
+            }
+            console.log('✓ Database credentials loaded from Secrets Manager')
+          }
+        })
+        .catch(() => console.warn('⚠ Failed to load database credentials from Secrets Manager'))
+    )
+  }
+
+  // External API keys (for future integrations)
+  const apiSecretName = getEnv('SECRETS_EXTERNAL_APIS_NAME', '')
+  if (apiSecretName) {
+    secretPromises.push(
+      getSecretValue(apiSecretName, { fallback: null })
+        .then(val => {
+          if (val) {
+            const parsed = parseSecretJson(val, null, {})
+            cfg.externalApis = {
+              ffmpegApiKey: parsed.ffmpegApiKey || '',
+              transcriptionApiKey: parsed.transcriptionApiKey || '',
+              notificationWebhook: parsed.notificationWebhook || ''
+            }
+            console.log('✓ External API credentials loaded from Secrets Manager')
+          }
+        })
+        .catch(() => console.warn('⚠ Failed to load external API credentials from Secrets Manager'))
+    )
+  }
+
+  // Wait for all secret loading to complete
+  if (secretPromises.length > 0) {
+    console.log(`Loading ${secretPromises.length} secrets from Secrets Manager...`)
+    await Promise.allSettled(secretPromises)
+  }
+
+  // Feature flags (must be set after secrets are loaded)
+  cfg.features = {
+    useCognito: !!(cfg.cognito.userPoolId && cfg.cognito.clientId),
+    useS3: !!cfg.s3.bucket,
+    useSecretsManager: secretPromises.length > 0
+  }
+
+  console.log('✓ Configuration loaded:', {
+    cognito: cfg.features.useCognito,
+    s3: cfg.features.useS3,
+    secrets: cfg.features.useSecretsManager,
+    region: cfg.region
+  })
+
   return cfg
 }
 

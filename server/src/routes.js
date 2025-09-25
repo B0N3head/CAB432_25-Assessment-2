@@ -27,8 +27,29 @@ router.get('/config', (_, res)=> {
   res.json({
     region: config.region,
     features: config.features,
-    cognito: { domain: config.cognito.domain, clientId: config.cognito.clientId, userPoolId: !!config.cognito.userPoolId ? 'configured' : '' },
-    s3: { bucket: config.s3.bucket, prefixes: { uploads: config.s3.uploadsPrefix, outputs: config.s3.outputsPrefix, thumbs: config.s3.thumbsPrefix } }
+    cognito: { 
+      domain: config.cognito.domain, 
+      clientId: config.cognito.clientId, 
+      userPoolId: !!config.cognito.userPoolId ? 'configured' : '',
+      hasClientSecret: !!config.cognito.clientSecret
+    },
+    s3: { 
+      bucket: config.s3.bucket, 
+      prefixes: { 
+        uploads: config.s3.uploadsPrefix, 
+        outputs: config.s3.outputsPrefix, 
+        thumbs: config.s3.thumbsPrefix 
+      } 
+    },
+    secretsManager: {
+      enabled: config.features.useSecretsManager,
+      loadedSecrets: {
+        jwt: !!config.jwtSecret && config.jwtSecret !== 'devsecret',
+        cognito: !!config.cognito.clientSecret,
+        database: !!(config.database && config.database.accessKeyId),
+        externalApis: !!(config.externalApis && Object.keys(config.externalApis).length > 0)
+      }
+    }
   })
 })
 
