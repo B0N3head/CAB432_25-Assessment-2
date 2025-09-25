@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
 # Auto update script: pull latest git, install dependencies (without deleting existing node_modules),
@@ -52,12 +51,39 @@ else
   npm install --no-audit --no-fund --progress=false
 fi
 
+log "Updating version information"
+cd "$REPO_DIR"
+if [ -f "update-version.sh" ]; then
+  ./update-version.sh || log "Version update failed, continuing..."
+else
+  log "No version update script found, skipping version update"
+fi
+
 log "Building client dist"
+cd "$CLIENT_DIR"
 npm run build
 
-log "Restarting docker-compose service"
+log "Stopping and restarting docker-compose service to reload server code"
 cd "$REPO_DIR"
+# Force stop and restart to reload server code (mounted volumes don't auto-restart Node.js)
+docker compose -f "$COMPOSE_FILE" down
 docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+
+log "Waiting for service to start..."
+sleep 10
+
+log "Checking service health"
+docker compose -f "$COMPOSE_FILE" ps
+
+log "Recent container logs (last 10 lines):"
+docker compose -f "$COMPOSE_FILE" logs --tail=10 api || log "Could not fetch logs"
+
+log "Testing service endpoint..."
+if curl -f -s http://localhost/api/v1/config >/dev/null 2>&1; then
+  log "Service is responding"
+else
+  log "Service may not be ready yet"
+fi
 
 log "Pruning old unused images (optional)"
 docker image prune -f >/dev/null 2>&1 || true

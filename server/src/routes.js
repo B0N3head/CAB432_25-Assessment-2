@@ -48,6 +48,15 @@ function getVersionInfo() {
   return { version, buildTime, gitHash, deployDate }
 }
 
+// Health check endpoint (used by Docker healthcheck)
+router.get('/health', (_, res)=> {
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  })
+})
+
 // Dedicated version endpoint
 router.get('/version', (_, res)=> {
   const versionInfo = getVersionInfo()

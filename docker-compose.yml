@@ -1,5 +1,3 @@
-version: '3.9'
-
 # Runtime-only compose: container runs server directly from mounted source.
 # Client is built on the host by the update script and its dist is mounted as public assets.
 services:
