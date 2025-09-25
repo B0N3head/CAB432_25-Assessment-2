@@ -76,9 +76,9 @@ export async function loadConfig() {
   // S3
   cfg.s3 = {
     bucket: getEnv('S3_BUCKET', ''),
-    uploadsPrefix: getEnv('S3_UPLOADS_PREFIX', 'uploads/'),
-    outputsPrefix: getEnv('S3_OUTPUTS_PREFIX', 'outputs/'),
-    thumbsPrefix: getEnv('S3_THUMBS_PREFIX', 'thumbnails/'),
+    uploadsPrefix: getEnv('S3_UPLOADS_PREFIX', 'media/uploads/'),
+    outputsPrefix: getEnv('S3_OUTPUTS_PREFIX', 'media/outputs/'),
+    thumbsPrefix: getEnv('S3_THUMBS_PREFIX', 'media/thumbnails/'),
   }
   // Memcached
   cfg.cache = {

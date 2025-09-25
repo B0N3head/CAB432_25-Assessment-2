@@ -9,3 +9,4 @@ setup-secrets.ps1
 test-secrets.ps1
 **/.env
 client/dist
+S3_SETUP_INSTRUCTIONS.md

@@ -9,7 +9,16 @@ function getS3() {
 }
 
 export async function presignUpload({ key, contentType, expires = 900 }) {
-  const cmd = new PutObjectCommand({ Bucket: config.s3.bucket, Key: key, ContentType: contentType })
+  const cmd = new PutObjectCommand({ 
+    Bucket: config.s3.bucket, 
+    Key: key, 
+    ContentType: contentType,
+    // Add metadata for better tracking
+    Metadata: {
+      'upload-timestamp': new Date().toISOString(),
+      'content-type': contentType
+    }
+  })
   const url = await getSignedUrl(getS3(), cmd, { expiresIn: expires })
   return { url, bucket: config.s3.bucket, key }
 }
