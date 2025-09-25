@@ -24,7 +24,32 @@ const auth = config.features.useCognito ? authMiddlewareCognito() : authMiddlewa
 // Scales maintaining aspect ratio, targeting 640x360 by default.
 // Public config for client feature toggles
 router.get('/config', (_, res)=> {
+  // Get version info - prefer build-info.json if available, fallback to package.json
+  let version = '1.0.0'
+  let buildTime = new Date().toISOString()
+  let gitHash = ''
+  let deployDate = ''
+  
+  try {
+    // Try build-info.json first (created by update-version script)
+    const buildInfo = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build-info.json'), 'utf8'))
+    version = buildInfo.version || version
+    buildTime = buildInfo.buildTime || buildTime
+    gitHash = buildInfo.gitHash || ''
+    deployDate = buildInfo.deployDate || ''
+  } catch {
+    // Fallback to package.json
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+      version = pkg.version || version
+    } catch {}
+  }
+
   res.json({
+    version: version,
+    buildTime: buildTime,
+    gitHash: gitHash,
+    deployDate: deployDate,
     region: config.region,
     features: config.features,
     cognito: { 

@@ -14,7 +14,7 @@ export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '')
   const [user, setUser] = useState(null)
   const [view, setView] = useState('login') // 'login' | 'editor'
-  const [serverConfig, setServerConfig] = useState({ features:{}, cognito:{}, s3:{} })
+  const [serverConfig, setServerConfig] = useState({ features:{}, cognito:{}, s3:{}, version:'', buildTime:'' })
   const [files, setFiles] = useState([])
   const [project, setProject] = useState(null)
   const [projects, setProjects] = useState([])
@@ -228,7 +228,7 @@ export default function App() {
 
   // Views
   if (view==='login') return (
-    <div className="app" style={{ gridTemplateRows: `56px 1fr ${timelineHeight}px` }}>
+    <div className="app" style={{ gridTemplateRows: `56px 1fr ${timelineHeight}px`, position: 'relative' }}>
       <header>
         <div className="row">
           <strong>Video Editor</strong>
@@ -246,6 +246,34 @@ export default function App() {
             </>
           )}
         </div>
+      </div>
+      {/* Version info in bottom right */}
+      <div style={{
+        position: 'fixed',
+        bottom: '16px',
+        right: '16px',
+        background: 'rgba(0,0,0,0.7)',
+        color: '#fff',
+        padding: '8px 12px',
+        borderRadius: '4px',
+        fontSize: '12px',
+        fontFamily: 'monospace',
+        zIndex: 1000,
+        border: '1px solid rgba(255,255,255,0.2)',
+        textAlign: 'right'
+      }}>
+        <div>
+          v{serverConfig?.version || '1.0.0'}
+          {serverConfig?.gitHash && <span style={{opacity: 0.7, marginLeft: '4px'}}>({serverConfig.gitHash})</span>}
+        </div>
+        {(serverConfig?.buildTime || serverConfig?.deployDate) && (
+          <div style={{opacity: 0.8, marginTop: '2px', fontSize: '11px'}}>
+            {serverConfig?.deployDate || (
+              new Date(serverConfig.buildTime).toLocaleDateString() + ' ' + 
+              new Date(serverConfig.buildTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
