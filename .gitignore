@@ -7,5 +7,5 @@ GIT_DEPLOY.md
 SECRETS_SETUP.md
 setup-secrets.ps1
 test-secrets.ps1
-server/.env
-client/dist/
+**/.env
+client/dist
