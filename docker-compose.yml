@@ -10,8 +10,8 @@ services:
       - ./client/dist:/workspace/server/public
       # Ensure build-info.json is available in container
       - ./server/build-info.json:/workspace/server/build-info.json:ro
-    # Install ffmpeg & run server. For faster restarts you can bake a custom image later.
-    command: bash -lc "apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/* && node src/index.js"
+    # Install ffmpeg, curl & run server. For faster restarts you can bake a custom image later.
+    command: bash -lc "apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl && rm -rf /var/lib/apt/lists/* && node src/index.js"
     env_file:
       - ./server/.env
     ports:
