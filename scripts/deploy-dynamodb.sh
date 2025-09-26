@@ -6,6 +6,10 @@
 
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 QUT_USERNAME=${1:-n11590041}
 ENVIRONMENT=${2:-prod}
 STACK_NAME="${QUT_USERNAME}-video-editor-dynamodb"
@@ -28,7 +32,7 @@ fi
 # Deploy CloudFormation stack
 echo "📝 Deploying CloudFormation stack..."
 aws cloudformation deploy \
-    --template-file aws/dynamodb-table.yaml \
+    --template-file "$PROJECT_ROOT/aws/dynamodb-table.yaml" \
     --stack-name "$STACK_NAME" \
     --parameter-overrides \
         QUTUsername="$QUT_USERNAME" \

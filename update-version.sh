@@ -1,4 +1,7 @@
 
+#!/bin/bash
+# Update version information for video editor deployment
+
 # Get current date in ISO format
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
 DEPLOY_DATE=$(date +"%Y-%m-%d %H:%M")

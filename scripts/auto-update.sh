@@ -54,6 +54,7 @@ fi
 log "Updating version information"
 cd "$REPO_DIR"
 if [ -f "update-version.sh" ]; then
+  chmod +x update-version.sh
   ./update-version.sh || log "Version update failed, continuing..."
 else
   log "No version update script found, skipping version update"
@@ -62,6 +63,9 @@ fi
 log "Building client dist"
 cd "$CLIENT_DIR"
 npm run build
+
+log "Making scripts executable"
+chmod +x scripts/*.sh >/dev/null 2>&1 || true
 
 log "Stopping and restarting docker-compose service to reload server code"
 cd "$REPO_DIR"
