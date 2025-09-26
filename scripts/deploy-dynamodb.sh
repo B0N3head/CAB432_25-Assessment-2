@@ -14,7 +14,7 @@ QUT_USERNAME=${1:-n11590041}
 ENVIRONMENT=${2:-prod}
 STACK_NAME="${QUT_USERNAME}-video-editor-dynamodb"
 
-echo "🚀 Deploying DynamoDB table for Video Editor"
+echo " Deploying DynamoDB table for Video Editor"
 echo "============================================="
 echo "QUT Username: $QUT_USERNAME"
 echo "Environment: $ENVIRONMENT"
@@ -24,13 +24,13 @@ echo ""
 
 # Check if AWS CLI is configured
 if ! aws sts get-caller-identity &> /dev/null; then
-    echo "❌ AWS CLI not configured or no valid credentials found"
+    echo " AWS CLI not configured or no valid credentials found"
     echo "   Please run 'aws configure' or set AWS credentials"
     exit 1
 fi
 
 # Deploy CloudFormation stack
-echo "📝 Deploying CloudFormation stack..."
+echo " Deploying CloudFormation stack..."
 aws cloudformation deploy \
     --template-file "$PROJECT_ROOT/aws/dynamodb-table.yaml" \
     --stack-name "$STACK_NAME" \
@@ -42,7 +42,7 @@ aws cloudformation deploy \
 
 # Get stack outputs
 echo ""
-echo "📋 Stack Outputs:"
+echo " Stack Outputs:"
 echo "================="
 aws cloudformation describe-stacks \
     --stack-name "$STACK_NAME" \
@@ -56,7 +56,7 @@ TABLE_NAME=$(aws cloudformation describe-stacks \
     --output text)
 
 echo ""
-echo "✅ DynamoDB table deployed successfully!"
+echo "DynamoDB table deployed successfully!"
 echo "======================================="
 echo "Table Name: $TABLE_NAME"
 echo "Console URL: https://console.aws.amazon.com/dynamodb/home?region=$(aws configure get region)#tables:selected=$TABLE_NAME"
