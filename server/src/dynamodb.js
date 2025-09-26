@@ -16,6 +16,7 @@ export class VideoEditorDB {
       const command = new QueryCommand({
         TableName: this.tableName,
         KeyConditionExpression: '#pk = :pk',
+        FilterExpression: 'attribute_exists(projectId) AND NOT attribute_exists(fileId)',
         ExpressionAttributeNames: {
           '#pk': 'qut-username'
         },
@@ -29,8 +30,17 @@ export class VideoEditorDB {
       // Transform DynamoDB items back to the expected format
       const projects = {}
       response.Items?.forEach(item => {
-        if (item.projectId) {
-          projects[item.projectId] = item.projectData
+        if (item.projectId && !item.fileId) {
+          if (item.projectData) {
+            projects[item.projectId] = item.projectData
+          } else {
+            // Handle cases where project data is stored differently
+            const projectData = { ...item }
+            delete projectData['qut-username']
+            delete projectData.projectId
+            delete projectData.lastModified
+            projects[item.projectId] = projectData
+          }
         }
       })
 
@@ -102,20 +112,20 @@ export class VideoEditorDB {
     }
   }
 
-  // File management functions
+  // File management functions  
   // Get all files for a user
   async getUserFiles(username) {
     try {
       const command = new QueryCommand({
         TableName: this.tableName,
-        KeyConditionExpression: '#pk = :pk AND begins_with(#sk, :sk)',
+        KeyConditionExpression: '#pk = :pk',
+        FilterExpression: 'attribute_exists(#fileId)',
         ExpressionAttributeNames: {
           '#pk': 'qut-username',
-          '#sk': 'fileId'
+          '#fileId': 'fileId'
         },
         ExpressionAttributeValues: {
-          ':pk': username,
-          ':sk': 'file#'
+          ':pk': username
         }
       })
 
@@ -124,8 +134,18 @@ export class VideoEditorDB {
       // Transform DynamoDB items back to the expected format
       const files = []
       response.Items?.forEach(item => {
-        if (item.fileData) {
-          files.push(item.fileData)
+        // Check if this item represents a file (has fileId attribute)
+        if (item.fileId && item.fileId.startsWith('file#')) {
+          if (item.fileData) {
+            files.push(item.fileData)
+          } else {
+            // Handle cases where file data is stored differently
+            const fileData = { ...item }
+            delete fileData['qut-username']
+            delete fileData.fileId
+            delete fileData.lastModified
+            files.push(fileData)
+          }
         }
       })
 
@@ -144,7 +164,14 @@ export class VideoEditorDB {
         Item: {
           'qut-username': username,
           fileId: `file#${fileData.id}`,
-          fileData: fileData,
+          // Store file attributes directly as top-level attributes for compatibility
+          id: fileData.id,
+          ownerId: fileData.ownerId,
+          s3Key: fileData.s3Key,
+          name: fileData.name,
+          mimetype: fileData.mimetype,
+          createdAt: fileData.createdAt,
+          duration: fileData.duration,
           lastModified: new Date().toISOString()
         }
       })

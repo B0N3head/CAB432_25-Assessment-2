@@ -304,29 +304,60 @@ router.get('/files/:id/presign-download', auth, async (req,res)=> {
 
 // ---- Projects ----
 router.get('/projects', auth, async (req,res)=> {
-  const { page=1, limit=50 } = req.query
-  const p = parseInt(page), l = parseInt(limit)
-  const key = `projects:${req.user.id}:${p}:${l}`
-  const cached = await cacheGet(key)
-  if (cached) return res.json(cached)
-  const db = getDB()
-  const items = db.projects.filter(p=> req.user.role==='admin' || p.ownerId===req.user.id)
-  const slice = items.slice((p-1)*l, p*l)
-  const payload = { items: slice, total: items.length, page:p, limit:l }
-  res.json(payload)
-  cacheSet(key, payload, 120).catch(()=>{})
+  try {
+    const { page=1, limit=50 } = req.query
+    const p = parseInt(page), l = parseInt(limit)
+    const key = `projects:${req.user.id}:${p}:${l}`
+    const cached = await cacheGet(key)
+    if (cached) return res.json(cached)
+    
+    // Get user's projects using DynamoDB-aware storage
+    const userProjects = await getUserProjects(req.user.username || req.user.id)
+    
+    // Convert object to array if needed
+    const projectsArray = Array.isArray(userProjects) ? userProjects : Object.values(userProjects || {})
+    
+    // Filter projects for admin role or ownership
+    const items = projectsArray.filter(p=> req.user.role==='admin' || p.ownerId===req.user.id)
+    const slice = items.slice((p-1)*l, p*l)
+    const payload = { items: slice, total: items.length, page:p, limit:l }
+    res.json(payload)
+    cacheSet(key, payload, 120).catch(()=>{})
+  } catch (error) {
+    console.error('Error getting projects:', error)
+    res.status(500).json({ error: 'Failed to get projects' })
+  }
 })
 
-router.post('/projects', auth, (req,res)=> {
-  const { name, width=1920, height=1080, fps=30 } = req.body || {}
-  if (!name) return res.status(400).json({ error:'name required' })
-  const db = getDB()
-  const proj = { id: uuidv4(), ownerId: req.user.id, name, width, height, fps, tracks:[
-    { id: uuidv4(), type: 'video', name:'V1', clips:[] },
-    { id: uuidv4(), type: 'audio', name:'A1', clips:[] },
-  ], createdAt: Date.now(), updatedAt: Date.now() }
-  db.projects.push(proj); saveDB(db)
-  res.status(201).json(proj)
+router.post('/projects', auth, async (req,res)=> {
+  try {
+    const { name, width=1920, height=1080, fps=30 } = req.body || {}
+    if (!name) return res.status(400).json({ error:'name required' })
+    
+    const proj = { 
+      id: uuidv4(), 
+      ownerId: req.user.id, 
+      name, 
+      width, 
+      height, 
+      fps, 
+      tracks:[
+        { id: uuidv4(), type: 'video', name:'V1', clips:[] },
+        { id: uuidv4(), type: 'audio', name:'A1', clips:[] },
+      ], 
+      createdAt: Date.now(), 
+      updatedAt: Date.now() 
+    }
+    
+    // Save project using DynamoDB-aware storage
+    await saveUserProject(req.user.username || req.user.id, proj.id, proj)
+    
+    console.log('Project created successfully:', proj.id)
+    res.status(201).json(proj)
+  } catch (error) {
+    console.error('Error creating project:', error)
+    res.status(500).json({ error: 'Failed to create project' })
+  }
 })
 
 router.get('/projects/:id', auth, (req,res)=> {
