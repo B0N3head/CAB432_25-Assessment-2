@@ -113,7 +113,7 @@ export async function getUserMediaMetadata(username) {
 
 export async function saveMediaMetadata(username, mediaId, metadata) {
   if (USE_DYNAMODB) {
-    return await dynamoDB.saveMediaMetadata(username, mediaId, metadata)
+    return await dynamoDB.saveFile(username, metadata)
   } else {
     const db = getJSONDB()
     if (!db.files) db.files = []
@@ -128,6 +128,60 @@ export async function saveMediaMetadata(username, mediaId, metadata) {
       db.files.push(mediaEntry)
     }
     
+    saveJSONDB(db)
+    return true
+  }
+}
+
+// File management functions
+export async function getUserFiles(username) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getUserFiles(username)
+  } else {
+    const db = getJSONDB()
+    return db.files || []
+  }
+}
+
+export async function saveUserFile(username, fileData) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.saveFile(username, fileData)
+  } else {
+    const db = getJSONDB()
+    if (!db.files) db.files = []
+    
+    // Find and update or create new file entry
+    const existingIndex = db.files.findIndex(f => f.id === fileData.id)
+    
+    if (existingIndex >= 0) {
+      db.files[existingIndex] = fileData
+    } else {
+      db.files.push(fileData)
+    }
+    
+    saveJSONDB(db)
+    return true
+  }
+}
+
+export async function getUserFile(username, fileId) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getFile(username, fileId)
+  } else {
+    const db = getJSONDB()
+    if (!db.files) return null
+    return db.files.find(f => f.id === fileId) || null
+  }
+}
+
+export async function deleteUserFile(username, fileId) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.deleteFile(username, fileId)
+  } else {
+    const db = getJSONDB()
+    if (!db.files) db.files = []
+    
+    db.files = db.files.filter(f => f.id !== fileId)
     saveJSONDB(db)
     return true
   }

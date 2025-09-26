@@ -5,7 +5,7 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
-import { getDB, saveDB } from './storage.js'
+import { getDB, saveDB, getUserFiles, saveUserFile, getUserFile, deleteUserFile, getUserProjects, saveUserProject } from './storage.js'
 import { users, signToken, authMiddleware, requireRole } from './security.js'
 import { probeMedia, generateThumbnail, buildFfmpegCommand, execFfmpeg, execFfmpegWithProgress } from './video.js'
 import config from './config.js'
@@ -190,17 +190,26 @@ const upload = multer({ storage })
 
 // ---- Files ----
 router.get('/files', auth, async (req,res)=> {
-  const { page=1, limit=50 } = req.query
-  const p = parseInt(page), l = parseInt(limit)
-  const key = `files:${req.user.id}:${p}:${l}`
-  const cached = await cacheGet(key)
-  if (cached) return res.json(cached)
-  const db = getDB()
-  const items = db.files.filter(f=> req.user.role==='admin' || f.ownerId===req.user.id)
-  const slice = items.slice((p-1)*l, p*l)
-  const payload = { items: slice, total: items.length, page:p, limit:l }
-  res.json(payload)
-  cacheSet(key, payload, 120).catch(()=>{})
+  try {
+    const { page=1, limit=50 } = req.query
+    const p = parseInt(page), l = parseInt(limit)
+    const key = `files:${req.user.id}:${p}:${l}`
+    const cached = await cacheGet(key)
+    if (cached) return res.json(cached)
+    
+    // Get user's files using DynamoDB-aware storage
+    const allItems = await getUserFiles(req.user.username || req.user.id)
+    
+    // Filter files for admin role or ownership
+    const items = allItems.filter(f=> req.user.role==='admin' || f.ownerId===req.user.id)
+    const slice = items.slice((p-1)*l, p*l)
+    const payload = { items: slice, total: items.length, page:p, limit:l }
+    res.json(payload)
+    cacheSet(key, payload, 120).catch(()=>{})
+  } catch (error) {
+    console.error('Error getting files:', error)
+    res.status(500).json({ error: 'Failed to get files' })
+  }
 })
 
 // If S3 is configured, prefer presigned uploads from client
@@ -252,27 +261,45 @@ router.post('/files/presign-upload', auth, async (req,res)=> {
 
 // After successful client upload to S3, register metadata
 router.post('/files/register', auth, async (req,res)=> {
-  const { id, originalName, key, mimetype, duration } = req.body || {}
-  if (!id || !key || !mimetype) return res.status(400).json({ error: 'id, key, mimetype required' })
-  const db = getDB()
-  const rec = { id, ownerId: req.user.id, s3Key: key, name: originalName || id, mimetype, createdAt: Date.now() }
-  if (duration) rec.duration = duration
-  // Optional generate thumbnail by downloading from S3 – skipped here for simplicity
-  db.files.push(rec); saveDB(db)
-  res.status(201).json(rec)
+  try {
+    const { id, originalName, key, mimetype, duration } = req.body || {}
+    if (!id || !key || !mimetype) return res.status(400).json({ error: 'id, key, mimetype required' })
+    
+    const rec = { 
+      id, 
+      ownerId: req.user.id, 
+      s3Key: key, 
+      name: originalName || id, 
+      mimetype, 
+      createdAt: Date.now() 
+    }
+    if (duration) rec.duration = duration
+    
+    // Save file using DynamoDB-aware storage
+    await saveUserFile(req.user.username || req.user.id, rec)
+    
+    console.log('File registered successfully:', rec.id)
+    res.status(201).json(rec)
+  } catch (error) {
+    console.error('Error registering file:', error)
+    res.status(500).json({ error: 'Failed to register file' })
+  }
 })
 
 // Generate a presigned download URL for a file
 router.get('/files/:id/presign-download', auth, async (req,res)=> {
-  const db = getDB()
-  const f = db.files.find(x=> x.id === req.params.id)
-  if (!f) return res.status(404).json({ error: 'not found' })
-  if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
-  if (!f.s3Key || !config.features.useS3) return res.status(400).json({ error: 'not stored in S3' })
   try {
+    const f = await getUserFile(req.user.username || req.user.id, req.params.id)
+    if (!f) return res.status(404).json({ error: 'not found' })
+    if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
+    if (!f.s3Key || !config.features.useS3) return res.status(400).json({ error: 'not stored in S3' })
+    
     const { url } = await presignDownload({ key: f.s3Key })
     res.json({ url })
-  } catch (e) { res.status(500).json({ error: 'presign failed' }) }
+  } catch (e) { 
+    console.error('Error in presign-download:', e)
+    res.status(500).json({ error: 'presign failed' }) 
+  }
 })
 
 // ---- Projects ----

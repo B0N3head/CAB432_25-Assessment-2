@@ -101,4 +101,99 @@ export class VideoEditorDB {
       throw error
     }
   }
+
+  // File management functions
+  // Get all files for a user
+  async getUserFiles(username) {
+    try {
+      const command = new QueryCommand({
+        TableName: this.tableName,
+        KeyConditionExpression: '#pk = :pk AND begins_with(#sk, :sk)',
+        ExpressionAttributeNames: {
+          '#pk': 'qut-username',
+          '#sk': 'fileId'
+        },
+        ExpressionAttributeValues: {
+          ':pk': username,
+          ':sk': 'file#'
+        }
+      })
+
+      const response = await this.docClient.send(command)
+      
+      // Transform DynamoDB items back to the expected format
+      const files = []
+      response.Items?.forEach(item => {
+        if (item.fileData) {
+          files.push(item.fileData)
+        }
+      })
+
+      return files
+    } catch (error) {
+      console.error('Error getting user files from DynamoDB:', error)
+      return []
+    }
+  }
+
+  // Save a file for a user
+  async saveFile(username, fileData) {
+    try {
+      const command = new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          'qut-username': username,
+          fileId: `file#${fileData.id}`,
+          fileData: fileData,
+          lastModified: new Date().toISOString()
+        }
+      })
+
+      await this.docClient.send(command)
+      console.log(`File ${fileData.id} saved for user ${username}`)
+      return true
+    } catch (error) {
+      console.error('Error saving file to DynamoDB:', error)
+      throw error
+    }
+  }
+
+  // Get a specific file for a user
+  async getFile(username, fileId) {
+    try {
+      const command = new GetCommand({
+        TableName: this.tableName,
+        Key: {
+          'qut-username': username,
+          fileId: `file#${fileId}`
+        }
+      })
+
+      const response = await this.docClient.send(command)
+      return response.Item?.fileData || null
+    } catch (error) {
+      console.error('Error getting file from DynamoDB:', error)
+      return null
+    }
+  }
+
+  // Delete a file for a user
+  async deleteFile(username, fileId) {
+    try {
+      const command = new DeleteCommand({
+        TableName: this.tableName,
+        Key: {
+          'qut-username': username,
+          fileId: `file#${fileId}`
+        }
+      })
+
+      await this.docClient.send(command)
+      console.log(`File ${fileId} deleted for user ${username}`)
+      return true
+    } catch (error) {
+      console.error('Error deleting file from DynamoDB:', error)
+      throw error
+    }
+  }
 }
