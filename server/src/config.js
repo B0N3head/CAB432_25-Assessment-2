@@ -88,6 +88,12 @@ export async function loadConfig() {
   // JWT secret fallback (dev only)
   cfg.jwtSecret = getEnv('JWT_SECRET', 'devsecret')
   
+  // AWS credentials (only for local development)
+  cfg.aws = {
+    accessKeyId: getEnv('AWS_ACCESS_KEY_ID', ''),
+    secretAccessKey: getEnv('AWS_SECRET_ACCESS_KEY', '')
+  }
+  
   // Initialize optional configs
   cfg.database = cfg.database || {}
   cfg.externalApis = cfg.externalApis || {}

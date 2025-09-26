@@ -4,7 +4,24 @@ import config from './config.js'
 
 let s3
 function getS3() {
-  if (!s3) s3 = new S3Client({ region: config.region })
+  if (!s3) {
+    // Configure S3 client - will use IAM instance role when deployed
+    const clientConfig = { 
+      region: config.region 
+    }
+    
+    // Only add credentials if they exist (for local development)
+    if (config.aws?.accessKeyId && config.aws?.secretAccessKey) {
+      clientConfig.credentials = {
+        accessKeyId: config.aws.accessKeyId,
+        secretAccessKey: config.aws.secretAccessKey
+      }
+    }
+    
+    s3 = new S3Client(clientConfig)
+    console.log('S3Client configured with region:', config.region, 
+                'using IAM role:', !config.aws?.accessKeyId)
+  }
   return s3
 }
 

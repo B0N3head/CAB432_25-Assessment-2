@@ -90,3 +90,21 @@ docker image prune -f >/dev/null 2>&1 || true
 
 NEW_SHA=$(git rev-parse HEAD)
 log "Update complete: $CURRENT_SHA -> $NEW_SHA"
+
+# Wait up to 1 minute, checking every 5 seconds for public endpoint
+echo "Checking public endpoint availability, gimme a tick"
+for i in {12..1}; do
+  if curl -f -s https://videoeditor.cab432.com/api/v1/health >/dev/null 2>&1; then
+    log "Public service endpoint is responding - Success!"
+    break
+  else
+    if [ $i -gt 1 ]; then
+      echo -ne "\rPublic endpoint not ready yet. Retrying in 5 seconds... ($((i-1)) attempts remaining)"
+      sleep 5
+    else
+      log "Public endpoint still not responding after 1 minute"
+    fi
+  fi
+done
+echo ""
+

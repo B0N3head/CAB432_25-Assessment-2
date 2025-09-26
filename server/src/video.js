@@ -2,6 +2,8 @@ import { spawn } from 'child_process'
 import { cacheSet } from './cache.js'
 import path from 'path'
 import fs from 'fs'
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import config from './config.js'
 
 export function execCmd(cmd, args){
   return new Promise((resolve, reject)=> {
@@ -24,8 +26,65 @@ export async function probeMedia(filepath){
   } catch (e) { return null }
 }
 
-export async function generateThumbnail(inputPath, outPath){
-  await execCmd('ffmpeg', ['-y','-ss','1.0','-i',inputPath,'-frames:v','1', outPath])
+// S3 client for uploading renders and thumbnails
+let s3Client
+function getS3Client() {
+  if (!s3Client) {
+    const clientConfig = { region: config.region }
+    if (config.aws?.accessKeyId && config.aws?.secretAccessKey) {
+      clientConfig.credentials = {
+        accessKeyId: config.aws.accessKeyId,
+        secretAccessKey: config.aws.secretAccessKey
+      }
+    }
+    s3Client = new S3Client(clientConfig)
+  }
+  return s3Client
+}
+
+// Upload file to S3 and return the S3 key
+export async function uploadToS3(localFilePath, s3Key, contentType) {
+  try {
+    const fileBuffer = fs.readFileSync(localFilePath)
+    
+    const uploadCommand = new PutObjectCommand({
+      Bucket: config.s3.bucket,
+      Key: s3Key,
+      Body: fileBuffer,
+      ContentType: contentType,
+      Metadata: {
+        'upload-timestamp': new Date().toISOString(),
+        'original-filename': path.basename(localFilePath)
+      }
+    })
+    
+    await getS3Client().send(uploadCommand)
+    console.log(`✅ Uploaded ${localFilePath} to S3: s3://${config.s3.bucket}/${s3Key}`)
+    
+    // Clean up local file after upload
+    fs.unlinkSync(localFilePath)
+    
+    return {
+      success: true,
+      s3Key,
+      bucket: config.s3.bucket,
+      url: `https://${config.s3.bucket}.s3.${config.region}.amazonaws.com/${s3Key}`
+    }
+  } catch (error) {
+    console.error('Error uploading to S3:', error)
+    throw error
+  }
+}
+
+export async function generateThumbnail(inputPath, username, videoId){
+  const tempPath = `/tmp/thumb_${videoId}_${Date.now()}.jpg`
+  await execCmd('ffmpeg', ['-y','-ss','1.0','-i',inputPath,'-frames:v','1', tempPath])
+  
+  // Upload thumbnail to S3
+  const s3Key = `${config.s3.thumbsPrefix}${username}/${videoId}/thumbnail.jpg`
+  const result = await uploadToS3(tempPath, s3Key, 'image/jpeg')
+  
+  return result
 }
 
 // Build an ffmpeg command that composes tracks by z-order (higher video tracks overlay on top).
@@ -151,4 +210,54 @@ export function execFfmpegWithProgress(args, outPath, jobId) {
       else reject(new Error(`ffmpeg failed (${code})`))
     })
   })
+}
+
+// Render video and upload to S3
+export async function renderAndUploadVideo(project, files, options, username, projectId) {
+  const { renditions = ['1080p'] } = options || {}
+  const results = []
+  
+  for (const rendition of renditions) {
+    console.log(`🎬 Starting render for ${rendition}...`)
+    
+    // Create temporary output file
+    const tempOutputPath = `/tmp/render_${projectId}_${rendition}_${Date.now()}.mp4`
+    
+    try {
+      // Build ffmpeg command
+      const args = await buildFfmpegCommand(project, files, { ...options, renditions: [rendition] })
+      
+      // Execute ffmpeg render
+      const jobId = `render_${projectId}_${rendition}_${Date.now()}`
+      await execFfmpegWithProgress(args, tempOutputPath, jobId)
+      
+      // Upload to S3
+      const s3Key = `${config.s3.outputsPrefix}${username}/${projectId}/${rendition}/video.mp4`
+      const uploadResult = await uploadToS3(tempOutputPath, s3Key, 'video/mp4')
+      
+      results.push({
+        rendition,
+        ...uploadResult,
+        jobId
+      })
+      
+      console.log(`✅ ${rendition} render completed and uploaded`)
+      
+    } catch (error) {
+      console.error(`❌ Render failed for ${rendition}:`, error)
+      
+      // Clean up temp file if it exists
+      if (fs.existsSync(tempOutputPath)) {
+        fs.unlinkSync(tempOutputPath)
+      }
+      
+      results.push({
+        rendition,
+        success: false,
+        error: error.message
+      })
+    }
+  }
+  
+  return results
 }
