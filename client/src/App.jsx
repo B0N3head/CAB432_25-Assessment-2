@@ -132,7 +132,10 @@ export default function App() {
   }
 
   const onUpload = async (e) => {
+    console.log('serverConfig:', serverConfig)
+    console.log('serverConfig.features:', serverConfig?.features)
     const useS3 = !!serverConfig?.features?.useS3
+    console.log('useS3 decision:', useS3)
     const selected = Array.from(e.target.files || [])
     if (selected.length === 0) return
     if (!useS3) {

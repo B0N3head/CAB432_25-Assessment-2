@@ -9,18 +9,26 @@ function getS3() {
 }
 
 export async function presignUpload({ key, contentType, expires = 900 }) {
-  const cmd = new PutObjectCommand({ 
-    Bucket: config.s3.bucket, 
-    Key: key, 
-    ContentType: contentType,
-    // Add metadata for better tracking
-    Metadata: {
-      'upload-timestamp': new Date().toISOString(),
-      'content-type': contentType
-    }
-  })
-  const url = await getSignedUrl(getS3(), cmd, { expiresIn: expires })
-  return { url, bucket: config.s3.bucket, key }
+  console.log('Attempting to create presigned URL for:', { key, contentType, bucket: config.s3.bucket })
+  try {
+    const cmd = new PutObjectCommand({ 
+      Bucket: config.s3.bucket, 
+      Key: key, 
+      ContentType: contentType,
+      // Add metadata for better tracking
+      Metadata: {
+        'upload-timestamp': new Date().toISOString(),
+        'content-type': contentType
+      }
+    })
+    console.log('S3 Command created, getting signed URL...')
+    const url = await getSignedUrl(getS3(), cmd, { expiresIn: expires })
+    console.log('Presigned URL created successfully')
+    return { url, bucket: config.s3.bucket, key }
+  } catch (error) {
+    console.error('S3 presign error:', error)
+    throw error
+  }
 }
 
 export async function presignDownload({ key, expires = 900 }) {

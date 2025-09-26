@@ -219,10 +219,14 @@ router.post('/files/presign-upload', auth, async (req,res)=> {
   const id = uuidv4()
   const ext = path.extname(filename)
   const key = `${config.s3.uploadsPrefix}${req.user.id}/${id}${ext}`
+  console.log('Presign request:', { filename, contentType, key, userId: req.user.id })
   try {
     const signed = await presignUpload({ key, contentType })
     res.json({ id, key, ...signed })
-  } catch (e) { res.status(500).json({ error: 'presign failed' }) }
+  } catch (e) { 
+    console.error('Presign route error:', e)
+    res.status(500).json({ error: 'presign failed', detail: e.message }) 
+  }
 })
 
 // After successful client upload to S3, register metadata
