@@ -43,6 +43,7 @@ export async function loadConfig() {
       cfg.cognito.domain = secretData.COGNITO_DOMAIN
       cfg.cognito.clientSecret = secretData.COGNITO_CLIENT_SECRET
       cfg.cognito.redirectUri = secretData.COGNITO_REDIRECT_URI
+      
       cfg.s3.bucket = secretData.S3_BUCKET
       cfg.jwtSecret = secretData.JWT_SECRET
       cfg.database.tableName = secretData.DYNAMODB_TABLE_NAME
