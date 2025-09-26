@@ -3,6 +3,12 @@ import jwt from 'jsonwebtoken'
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret'
 const JWT_EXPIRES = '1h'
 
+// Simple user store for development (when not using Cognito)
+export const users = [
+  { id: 'admin', username: 'admin', password: 'admin123', role: 'admin' },
+  { id: 'user1', username: 'user', password: 'user123', role: 'user' }
+]
+
 export function signToken(payload){
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES })
 }
