@@ -20,6 +20,10 @@ export async function loadConfig() {
   cfg.cache = { enabled: false }
   cfg.database = {}
   cfg.jwtSecret = 'devsecret'
+  cfg.aws = {
+    accessKeyId: '',
+    secretAccessKey: ''
+  }
   
   // Load secrets from AWS Secrets Manager
   const secretName = 'n11590041-video-editor'
@@ -54,6 +58,22 @@ export async function loadConfig() {
     console.error('Failed to load from Secrets Manager:', error.message)
     throw new Error(`Could not load configuration: ${error.message}`)
   }
+  
+  // Feature flags (must be set after secrets are loaded)
+  cfg.features = {
+    useCognito: !!(cfg.cognito.userPoolId && cfg.cognito.clientId),
+    useS3: !!cfg.s3.bucket,
+    useSecretsManager: true,
+    useDynamoDB: !!(cfg.database.tableName)
+  }
+
+  console.log('Configuration Summary:', {
+    cognito: cfg.features.useCognito,
+    s3: cfg.features.useS3,
+    dynamodb: cfg.features.useDynamoDB,
+    secrets: cfg.features.useSecretsManager,
+    region: cfg.region
+  })
   
   return cfg
 }
