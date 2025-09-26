@@ -25,7 +25,8 @@ const auth = config.features.useCognito ? authMiddlewareCognito() : authMiddlewa
 // public config for client feature toggles
 // Helper function to get version info
 function getVersionInfo() {
-  let version = '1.0.0'
+  let serverVersion = '1.0.0'
+  let clientVersion = '1.0.0'
   let buildTime = new Date().toISOString()
   let gitHash = ''
   let deployDate = ''
@@ -33,7 +34,18 @@ function getVersionInfo() {
   try {
     // Try build-info.json first (created by update-version script)
     const buildInfo = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build-info.json'), 'utf8'))
-    version = buildInfo.version || version
+    
+    // Support both old and new format
+    if (buildInfo.serverVersion && buildInfo.clientVersion) {
+      // New format with separate versions
+      serverVersion = buildInfo.serverVersion
+      clientVersion = buildInfo.clientVersion
+    } else if (buildInfo.version) {
+      // Legacy format - use same version for both
+      serverVersion = buildInfo.version
+      clientVersion = buildInfo.version
+    }
+    
     buildTime = buildInfo.buildTime || buildTime
     gitHash = buildInfo.gitHash || ''
     deployDate = buildInfo.deployDate || ''
@@ -41,11 +53,11 @@ function getVersionInfo() {
     // Fallback to package.json
     try {
       const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
-      version = pkg.version || version
+      serverVersion = pkg.version || serverVersion
     } catch {}
   }
   
-  return { version, buildTime, gitHash, deployDate }
+  return { serverVersion, clientVersion, buildTime, gitHash, deployDate }
 }
 
 // Health check endpoint (used by Docker healthcheck)
@@ -61,7 +73,15 @@ router.get('/health', (_, res)=> {
 router.get('/version', (_, res)=> {
   const versionInfo = getVersionInfo()
   res.json({
-    server: versionInfo,
+    server: {
+      version: versionInfo.serverVersion,
+      buildTime: versionInfo.buildTime,
+      gitHash: versionInfo.gitHash,
+      deployDate: versionInfo.deployDate
+    },
+    client: {
+      version: versionInfo.clientVersion
+    },
     api: 'v1',
     timestamp: new Date().toISOString()
   })
@@ -71,7 +91,8 @@ router.get('/config', (_, res)=> {
   const versionInfo = getVersionInfo()
 
   res.json({
-    version: versionInfo.version,
+    serverVersion: versionInfo.serverVersion,
+    clientVersion: versionInfo.clientVersion,
     buildTime: versionInfo.buildTime,
     gitHash: versionInfo.gitHash,
     deployDate: versionInfo.deployDate,
