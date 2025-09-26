@@ -59,7 +59,7 @@ export async function uploadToS3(localFilePath, s3Key, contentType) {
     })
     
     await getS3Client().send(uploadCommand)
-    console.log(`✅ Uploaded ${localFilePath} to S3: s3://${config.s3.bucket}/${s3Key}`)
+    console.log(`Uploaded ${localFilePath} to S3: s3://${config.s3.bucket}/${s3Key}`)
     
     // Clean up local file after upload
     fs.unlinkSync(localFilePath)
@@ -241,10 +241,10 @@ export async function renderAndUploadVideo(project, files, options, username, pr
         jobId
       })
       
-      console.log(`✅ ${rendition} render completed and uploaded`)
+      console.log(`${rendition} render completed and uploaded`)
       
     } catch (error) {
-      console.error(`❌ Render failed for ${rendition}:`, error)
+      console.error(`Render failed for ${rendition}:`, error)
       
       // Clean up temp file if it exists
       if (fs.existsSync(tempOutputPath)) {

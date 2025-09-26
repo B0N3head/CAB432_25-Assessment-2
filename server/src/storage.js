@@ -13,9 +13,9 @@ const USE_DYNAMODB = process.env.DYNAMODB_TABLE_NAME && process.env.DYNAMODB_TAB
 let dynamoDB = null
 if (USE_DYNAMODB) {
   dynamoDB = new VideoEditorDB()
-  console.log('✅ Storage configured for DynamoDB')
+  console.log('Storage configured for DynamoDB')
 } else {
-  console.log('⚠️  Storage using local JSON file (development mode)')
+  console.log('Storage using local JSON file (development mode)')
 }
 
 // Legacy JSON file functions (kept for backward compatibility and local development)
@@ -181,7 +181,7 @@ export async function migrateToUserStorage(username) {
         const projectId = project.id || `project_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         await saveUserProject(username, projectId, project)
       }
-      console.log(`✅ Migrated ${jsonDB.projects.length} projects`)
+      console.log(`Migrated ${jsonDB.projects.length} projects`)
     }
     
     // Migrate files/media
@@ -190,13 +190,13 @@ export async function migrateToUserStorage(username) {
         const mediaId = file.id || `media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         await saveMediaMetadata(username, mediaId, file)
       }
-      console.log(`✅ Migrated ${jsonDB.files.length} media entries`)
+      console.log(`Migrated ${jsonDB.files.length} media entries`)
     }
     
     // Create backup
     const backupPath = DB_PATH + `.backup.${Date.now()}`
     fs.copyFileSync(DB_PATH, backupPath)
-    console.log(`📦 Created backup: ${backupPath}`)
+    console.log(`Created backup: ${backupPath}`)
     
     return true
   }
