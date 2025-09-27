@@ -157,10 +157,41 @@ export default function App() {
       const presigned = await presignRes.json()
       const putRes = await fetch(presigned.url, { method:'PUT', headers:{ 'Content-Type': f.type || 'application/octet-stream' }, body: f })
       if (!putRes.ok) { alert('Upload to S3 failed'); return }
+      
+      // Extract duration for video files before registering
+      let duration = null
+      if (f.type && f.type.startsWith('video/')) {
+        try {
+          duration = await new Promise((resolve, reject) => {
+            const video = document.createElement('video')
+            video.onloadedmetadata = () => {
+              resolve(video.duration)
+              URL.revokeObjectURL(video.src)
+            }
+            video.onerror = () => {
+              reject(new Error('Failed to load video metadata'))
+              URL.revokeObjectURL(video.src)
+            }
+            video.src = URL.createObjectURL(f)
+          })
+          console.log(`Extracted duration for ${f.name}: ${duration}s`)
+        } catch (e) {
+          console.error('Failed to extract video duration:', e)
+        }
+      }
+      
+      const registerData = { 
+        id: presigned.id, 
+        originalName: f.name, 
+        key: presigned.key, 
+        mimetype: f.type 
+      }
+      if (duration) registerData.duration = duration
+      
       const regRes = await fetch(`${API}/api/v1/files/register`, {
         method:'POST',
         headers:{ 'Authorization': token, 'Content-Type':'application/json' },
-        body: JSON.stringify({ id: presigned.id, originalName: f.name, key: presigned.key, mimetype: f.type })
+        body: JSON.stringify(registerData)
       })
       if (!regRes.ok) { alert('Register file failed'); return }
     }
@@ -171,7 +202,8 @@ export default function App() {
     if (!project) return
     const t = project.tracks[trackIndex]
     const start = playhead
-    const duration = Math.min(file.duration || 5, 10)
+    // Use actual file duration, fallback to 5 seconds if unknown
+    const duration = file.duration || 5
     const clip = { id: crypto.randomUUID(), fileId:file.id, name:file.name, in:0, out:duration, start, type:t.type }
     // If adding a video with audio, also drop an audio clip to first audio track
     let extra = []
@@ -394,7 +426,10 @@ export default function App() {
                   <strong style={{maxWidth:160, overflow:'hidden', textOverflow:'ellipsis'}}>{f.name}</strong>
                   <span className="tag">{f.mimetype}</span>
                 </div>
-                <div style={{fontSize:12, color:'#aaa'}}>id: {f.id}</div>
+                <div style={{fontSize:12, color:'#aaa'}}>
+                  id: {f.id}
+                  {f.duration && <div>duration: {secondsToTime(f.duration)}</div>}
+                </div>
               </div>
             ))}
           </div>
@@ -516,8 +551,9 @@ export default function App() {
                     const left = c.start * pxPerSec
                     const width = (c.out - c.in) * pxPerSec
                     return (
-                      <div key={c.id} data-id={c.id} data-ti={ti} data-ci={ci} className={`clip ${t.type}`} style={{ left: left+'px', width: width+'px' }} title={`${c.name} ${secondsToTime(c.in)}-${secondsToTime(c.out)}`}>
+                      <div key={c.id} data-id={c.id} data-ti={ti} data-ci={ci} className={`clip ${t.type}`} style={{ left: left+'px', width: width+'px' }} title={`${c.name}\nDuration: ${secondsToTime(c.out - c.in)}\nTrim: ${secondsToTime(c.in)} - ${secondsToTime(c.out)}\nStart: ${secondsToTime(c.start)}`}>
                         <div className="name">{c.name}</div>
+                        <div className="duration" style={{fontSize: '10px', color: '#aaa', marginTop: '2px'}}>{secondsToTime(c.out - c.in)}</div>
                       </div>
                     )
                   })}
