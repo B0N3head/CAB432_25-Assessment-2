@@ -174,6 +174,55 @@ export async function getUserFile(username, fileId) {
   }
 }
 
+export async function getUserProject(username, projectId) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getProject(username, projectId)
+  } else {
+    const db = getJSONDB()
+    if (!db.projects) return null
+    return db.projects.find(p => p.id === projectId) || null
+  }
+}
+
+// Admin functions to access all users' data
+export async function getAllFiles() {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getAllFiles()
+  } else {
+    const db = getJSONDB()
+    return db.files || []
+  }
+}
+
+export async function getAllProjects() {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getAllProjects()
+  } else {
+    const db = getJSONDB()
+    return db.projects || []
+  }
+}
+
+export async function getFileForAdmin(fileId) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getFileForAdmin(fileId)
+  } else {
+    const db = getJSONDB()
+    if (!db.files) return null
+    return db.files.find(f => f.id === fileId) || null
+  }
+}
+
+export async function getProjectForAdmin(projectId) {
+  if (USE_DYNAMODB) {
+    return await dynamoDB.getProjectForAdmin(projectId)
+  } else {
+    const db = getJSONDB()
+    if (!db.projects) return null
+    return db.projects.find(p => p.id === projectId) || null
+  }
+}
+
 export async function deleteUserFile(username, fileId) {
   if (USE_DYNAMODB) {
     return await dynamoDB.deleteFile(username, fileId)

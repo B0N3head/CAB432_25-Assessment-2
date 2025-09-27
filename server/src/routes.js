@@ -5,7 +5,7 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
-import { getDB, saveDB, getUserFiles, saveUserFile, getUserFile, deleteUserFile, getUserProjects, saveUserProject } from './storage.js'
+import { getDB, saveDB, getUserFiles, saveUserFile, getUserFile, deleteUserFile, getUserProjects, saveUserProject, getUserProject, saveUserJob, getAllFiles, getAllProjects, getFileForAdmin, getProjectForAdmin } from './storage.js'
 import { users, signToken, authMiddleware, requireRole } from './security.js'
 import { probeMedia, generateThumbnail, buildFfmpegCommand, execFfmpeg, execFfmpegWithProgress } from './video.js'
 import config from './config.js'
@@ -129,8 +129,14 @@ router.get('/preview', auth, async (req,res)=> {
   try {
     const { fileId, h = 360 } = req.query
     if (!fileId) return res.status(400).json({ error: 'fileId required' })
-    const db = getDB()
-    const f = db.files.find(x=> x.id === fileId)
+    
+    let f
+    if (req.user.role === 'admin') {
+      f = await getFileForAdmin(fileId)
+    } else {
+      f = await getUserFile(req.user.username, fileId)
+    }
+    
     if (!f) return res.status(404).json({ error: 'not found' })
     if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
 
@@ -197,10 +203,15 @@ router.get('/files', auth, async (req,res)=> {
     const cached = await cacheGet(key)
     if (cached) return res.json(cached)
     
-    // Get user's files using DynamoDB-aware storage
-    const allItems = await getUserFiles(req.user.username || req.user.id)
+    // Get files based on user role
+    let allItems
+    if (req.user.role === 'admin') {
+      allItems = await getAllFiles()
+    } else {
+      allItems = await getUserFiles(req.user.username || req.user.id)
+    }
     
-    // Filter files for admin role or ownership
+    // Filter files for ownership (admin sees all, users see only their own)
     const items = allItems.filter(f=> req.user.role==='admin' || f.ownerId===req.user.id)
     const slice = items.slice((p-1)*l, p*l)
     const payload = { items: slice, total: items.length, page:p, limit:l }
@@ -214,31 +225,34 @@ router.get('/files', auth, async (req,res)=> {
 
 // If S3 is configured, prefer presigned uploads from client
 router.post('/files', auth, upload.array('files', 20), async (req,res)=> {
-  const db = getDB()
-  const saved = []
-  for (const file of req.files) {
-    const id = path.basename(file.filename, path.extname(file.filename))
-    const mimetype = file.mimetype
-    const fileRec = {
-      id, ownerId: req.user.id, path: file.path, name: file.originalname, mimetype,
-      url: `/media/uploads/${req.user.id}/${file.filename}`, createdAt: Date.now()
-    }
-    // Optional: generate thumbnail for videos
-    try {
-      if (mimetype.startsWith('video')) {
-        const thumb = path.join(__dirname, '..', 'data', 'thumbnails', `${id}.jpg`)
-        await generateThumbnail(file.path, thumb)
-        fileRec.thumbnail = `/media/thumbnails/${id}.jpg`
-        const meta = await probeMedia(file.path)
-        if (meta?.format?.duration) fileRec.duration = parseFloat(meta.format.duration)
+  try {
+    const saved = []
+    for (const file of req.files) {
+      const id = path.basename(file.filename, path.extname(file.filename))
+      const mimetype = file.mimetype
+      const fileRec = {
+        id, ownerId: req.user.id, path: file.path, name: file.originalname, mimetype,
+        url: `/media/uploads/${req.user.id}/${file.filename}`, createdAt: Date.now()
       }
-    } catch (e) { console.error('thumb/probe error', e) }
+      // Optional: generate thumbnail for videos
+      try {
+        if (mimetype.startsWith('video')) {
+          const thumb = path.join(__dirname, '..', 'data', 'thumbnails', `${id}.jpg`)
+          await generateThumbnail(file.path, thumb)
+          fileRec.thumbnail = `/media/thumbnails/${id}.jpg`
+          const meta = await probeMedia(file.path)
+          if (meta?.format?.duration) fileRec.duration = parseFloat(meta.format.duration)
+        }
+      } catch (e) { console.error('thumb/probe error', e) }
 
-    db.files.push(fileRec)
-    saved.push(fileRec)
+      await saveUserFile(req.user.username, fileRec)
+      saved.push(fileRec)
+    }
+    res.status(201).json({ items: saved })
+  } catch (error) {
+    console.error('Error processing file upload:', error)
+    res.status(500).json({ error: 'Failed to process uploaded files' })
   }
-  saveDB(db)
-  res.status(201).json({ items: saved })
 })
 
 // S3 presign endpoints (used when client uploads directly to S3)
@@ -311,13 +325,18 @@ router.get('/projects', auth, async (req,res)=> {
     const cached = await cacheGet(key)
     if (cached) return res.json(cached)
     
-    // Get user's projects using DynamoDB-aware storage
-    const userProjects = await getUserProjects(req.user.username || req.user.id)
+    // Get projects based on user role
+    let userProjects
+    if (req.user.role === 'admin') {
+      userProjects = await getAllProjects()
+    } else {
+      userProjects = await getUserProjects(req.user.username || req.user.id)
+    }
     
     // Convert object to array if needed
     const projectsArray = Array.isArray(userProjects) ? userProjects : Object.values(userProjects || {})
     
-    // Filter projects for admin role or ownership
+    // Filter projects for ownership (admin sees all, users see only their own)
     const items = projectsArray.filter(p=> req.user.role==='admin' || p.ownerId===req.user.id)
     const slice = items.slice((p-1)*l, p*l)
     const payload = { items: slice, total: items.length, page:p, limit:l }
@@ -360,51 +379,86 @@ router.post('/projects', auth, async (req,res)=> {
   }
 })
 
-router.get('/projects/:id', auth, (req,res)=> {
-  const db = getDB()
-  const proj = db.projects.find(p=> p.id===req.params.id)
-  if (!proj) return res.status(404).json({ error:'not found' })
-  if (req.user.role!=='admin' && proj.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
-  res.json(proj)
+router.get('/projects/:id', auth, async (req,res)=> {
+  try {
+    const projects = await getUserProjects(req.user.username)
+    const projectId = req.params.id
+    const proj = projects[projectId]
+    
+    if (!proj) return res.status(404).json({ error: 'not found' })
+    if (req.user.role !== 'admin' && proj.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
+    res.json(proj)
+  } catch (error) {
+    console.error('Error getting project:', error)
+    res.status(500).json({ error: 'Failed to get project' })
+  }
 })
 
-router.put('/projects/:id', auth, (req,res)=> {
-  const db = getDB()
-  const idx = db.projects.findIndex(p=> p.id===req.params.id)
-  if (idx<0) return res.status(404).json({ error:'not found' })
-  if (req.user.role!=='admin' && db.projects[idx].ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
-  const updated = { ...db.projects[idx], ...req.body, id: db.projects[idx].id, ownerId: db.projects[idx].ownerId, updatedAt: Date.now() }
-  db.projects[idx] = updated; saveDB(db)
-  res.json(updated)
+router.put('/projects/:id', auth, async (req,res)=> {
+  try {
+    const projects = await getUserProjects(req.user.username)
+    const projectId = req.params.id
+    
+    if (!projects[projectId]) {
+      return res.status(404).json({ error: 'not found' })
+    }
+    
+    if (req.user.role !== 'admin' && projects[projectId].ownerId !== req.user.id) {
+      return res.status(403).json({ error: 'forbidden' })
+    }
+    
+    const updated = { 
+      ...projects[projectId], 
+      ...req.body, 
+      id: projectId, 
+      ownerId: projects[projectId].ownerId, 
+      updatedAt: Date.now() 
+    }
+    
+    await saveUserProject(req.user.username, projectId, updated)
+    res.json(updated)
+  } catch (error) {
+    console.error('Error updating project:', error)
+    res.status(500).json({ error: 'Failed to update project' })
+  }
 })
 
 // ---- Render ----
 router.post('/projects/:id/render', auth, async (req,res)=> {
-  const db = getDB()
-  const proj = db.projects.find(p=> p.id===req.params.id)
-  if (!proj) return res.status(404).json({ error:'not found' })
-  if (req.user.role!=='admin' && proj.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
-
-  const { preset='crispstream', renditions=['1080p'] } = req.body || {}
-
-  // Build ffmpeg command
-  const cmd = await buildFfmpegCommand(proj, db.files, { preset, renditions })
-
-  // Output path
-  const outId = uuidv4()
-  const outName = `${outId}.mp4`
-  const outPath = path.join(__dirname, '..', 'data', 'outputs', outName)
-
   try {
-    console.log('ffmpeg args:', cmd.join(' '))
-    console.log('render output path:', outPath)
-    const { code, stderr } = await execFfmpegWithProgress(cmd, outPath, outId)
-    const job = { id: outId, projectId: proj.id, ownerId: proj.ownerId, output: `/media/outputs/${outName}`, createdAt: Date.now(), code, stderr }
-    db.jobs.push(job); saveDB(db)
-    res.status(201).json({ output: job.output, job })
-  } catch (e) {
-    console.error('render error', e)
-    res.status(500).json({ error:'render failed', detail: e.message })
+    const projects = await getUserProjects(req.user.username)
+    const files = await getUserFiles(req.user.username)
+    const proj = projects[req.params.id]
+    
+    if (!proj) return res.status(404).json({ error: 'not found' })
+    if (req.user.role !== 'admin' && proj.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
+
+    const { preset='crispstream', renditions=['1080p'] } = req.body || {}
+
+    // Build ffmpeg command
+    const cmd = await buildFfmpegCommand(proj, files, { preset, renditions })
+
+    // Output path
+    const outId = uuidv4()
+    const outName = `${outId}.mp4`
+    const outPath = path.join(__dirname, '..', 'data', 'outputs', outName)
+
+    try {
+      console.log('ffmpeg args:', cmd.join(' '))
+      console.log('render output path:', outPath)
+      const { code, stderr } = await execFfmpegWithProgress(cmd, outPath, outId)
+      const job = { id: outId, projectId: proj.id, ownerId: proj.ownerId, output: `/media/outputs/${outName}`, createdAt: Date.now(), code, stderr }
+      
+      // Save job to user's data
+      await saveUserJob(req.user.username, outId, job)
+      res.status(201).json({ output: job.output, job })
+    } catch (e) {
+      console.error('render error', e)
+      res.status(500).json({ error:'render failed', detail: e.message })
+    }
+  } catch (error) {
+    console.error('Error in render route:', error)
+    res.status(500).json({ error: 'Failed to process render request' })
   }
 })
 

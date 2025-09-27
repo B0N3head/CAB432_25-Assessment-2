@@ -197,7 +197,17 @@ export class VideoEditorDB {
       })
 
       const response = await this.docClient.send(command)
-      return response.Item?.fileData || null
+      
+      if (response.Item) {
+        // The file data is stored as top-level attributes, not nested
+        const fileData = { ...response.Item }
+        delete fileData['qut-username']
+        delete fileData.fileId
+        delete fileData.lastModified
+        return fileData
+      }
+      
+      return null
     } catch (error) {
       console.error('Error getting file from DynamoDB:', error)
       return null
@@ -221,6 +231,133 @@ export class VideoEditorDB {
     } catch (error) {
       console.error('Error deleting file from DynamoDB:', error)
       throw error
+    }
+  }
+
+  // Admin functions to access all users' data
+  async getAllFiles() {
+    try {
+      const command = new QueryCommand({
+        TableName: this.tableName,
+        IndexName: 'GSI1', // You'd need a GSI for efficient scanning
+        FilterExpression: 'attribute_exists(#fileId)',
+        ExpressionAttributeNames: {
+          '#fileId': 'fileId'
+        }
+      })
+
+      const response = await this.docClient.send(command)
+      const files = []
+      
+      response.Items?.forEach(item => {
+        if (item.fileId && item.fileId.startsWith('file#')) {
+          const fileData = { ...item }
+          delete fileData['qut-username']
+          delete fileData.fileId
+          delete fileData.lastModified
+          files.push(fileData)
+        }
+      })
+
+      return files
+    } catch (error) {
+      console.error('Error getting all files from DynamoDB:', error)
+      return []
+    }
+  }
+
+  async getAllProjects() {
+    try {
+      const command = new QueryCommand({
+        TableName: this.tableName,
+        IndexName: 'GSI1', // You'd need a GSI for efficient scanning
+        FilterExpression: 'attribute_exists(projectId) AND NOT attribute_exists(fileId)',
+        ExpressionAttributeNames: {}
+      })
+
+      const response = await this.docClient.send(command)
+      const projects = []
+      
+      response.Items?.forEach(item => {
+        if (item.projectId && !item.fileId) {
+          if (item.projectData) {
+            projects.push(item.projectData)
+          } else {
+            const projectData = { ...item }
+            delete projectData['qut-username']
+            delete projectData.projectId
+            delete projectData.lastModified
+            projects.push(projectData)
+          }
+        }
+      })
+
+      return projects
+    } catch (error) {
+      console.error('Error getting all projects from DynamoDB:', error)
+      return []
+    }
+  }
+
+  async getFileForAdmin(fileId) {
+    try {
+      // For admin access, we need to scan all users to find the file
+      const command = new QueryCommand({
+        TableName: this.tableName,
+        IndexName: 'GSI1', // You'd need a GSI for this
+        FilterExpression: '#id = :fileId',
+        ExpressionAttributeNames: {
+          '#id': 'id'
+        },
+        ExpressionAttributeValues: {
+          ':fileId': fileId
+        }
+      })
+
+      const response = await this.docClient.send(command)
+      
+      if (response.Items && response.Items.length > 0) {
+        const item = response.Items[0]
+        const fileData = { ...item }
+        delete fileData['qut-username']
+        delete fileData.fileId
+        delete fileData.lastModified
+        return fileData
+      }
+      
+      return null
+    } catch (error) {
+      console.error('Error getting file for admin from DynamoDB:', error)
+      return null
+    }
+  }
+
+  async getProjectForAdmin(projectId) {
+    try {
+      // For admin access, we need to scan all users to find the project
+      const command = new QueryCommand({
+        TableName: this.tableName,
+        IndexName: 'GSI1', // You'd need a GSI for this
+        FilterExpression: 'projectData.#id = :projectId',
+        ExpressionAttributeNames: {
+          '#id': 'id'
+        },
+        ExpressionAttributeValues: {
+          ':projectId': projectId
+        }
+      })
+
+      const response = await this.docClient.send(command)
+      
+      if (response.Items && response.Items.length > 0) {
+        const item = response.Items[0]
+        return item.projectData || null
+      }
+      
+      return null
+    } catch (error) {
+      console.error('Error getting project for admin from DynamoDB:', error)
+      return null
     }
   }
 }
