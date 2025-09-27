@@ -89,7 +89,10 @@ export async function generateThumbnail(inputPath, username, videoId){
 
 // Build an ffmpeg command that composes tracks by z-order (higher video tracks overlay on top).
 export async function buildFfmpegCommand(project, files, options){
-  const { width=1920, height=1080, fps=30, tracks=[] } = project
+  // Force 16:9 aspect ratio for consistent output
+  const width = 1920
+  const height = 1080
+  const { fps=30, tracks=[] } = project
   const { preset='crispstream', renditions=['1080p'] } = options || {}
 
   const videoClips = []
@@ -122,7 +125,8 @@ export async function buildFfmpegCommand(project, files, options){
   for (const clip of videoClips){
     inputArgs.push('-i', clip.path)
     const vlabel = `v${vi}`
-    filterGraphParts.push(`[${vi}:v]trim=start=${clip.in}:end=${clip.out},setpts=PTS-STARTPTS,scale=${width}:${height},format=yuva420p,setpts=PTS+${clip.start}/TB[${vlabel}]`)
+    // Improved scaling that maintains aspect ratio and centers content within 16:9
+    filterGraphParts.push(`[${vi}:v]trim=start=${clip.in}:end=${clip.out},setpts=PTS-STARTPTS,scale='min(${width},iw*${height}/ih)':'min(${height},ih*${width}/iw)':eval=frame,pad=${width}:${height}:(${width}-iw)/2:(${height}-ih)/2:black,format=yuva420p,setpts=PTS+${clip.start}/TB[${vlabel}]`)
     vlabels.push(vlabel)
     vi += 1
   }
@@ -134,8 +138,9 @@ export async function buildFfmpegCommand(project, files, options){
   let count = 1
   for (const vlabel of vlabels){
     const out = `base${count}`
-    // Do not use shortest=1; keep background duration as the full project duration
-    filterGraphParts.push(`[${last}][${vlabel}]overlay=format=auto[${out}]`)
+    // Use overlay with 'enable' to only show during clip duration, preventing frame extension
+    // The enable expression ensures overlay only happens during the clip's active time
+    filterGraphParts.push(`[${last}][${vlabel}]overlay=format=auto:enable='between(t,${videoClips[count-1].start},${videoClips[count-1].start + (videoClips[count-1].out - videoClips[count-1].in)})'[${out}]`)
     last = out
     count += 1
   }

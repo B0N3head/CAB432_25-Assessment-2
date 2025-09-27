@@ -122,6 +122,7 @@ export default function App() {
   const createProject = async () => {
     const name = prompt('Project name?','My Project')
     if (!name) return
+    // Ensure 16:9 aspect ratio (1920x1080)
     const data = await authFetch(`${API}/api/v1/projects`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, width:1920, height:1080, fps:30 }) })
     if (data && data.id) { setProject(data); fetchProjects() }
   }
@@ -221,6 +222,30 @@ export default function App() {
     const x = e.clientX - rect.left
     const t = x / zoom
     setPlayhead(Math.max(0, Math.min(duration, t)))
+  }
+
+  // Helper function to get snap points from all clips
+  const getSnapPoints = (excludeClipId = null) => {
+    if (!project) return []
+    const points = [0] // Always include timeline start
+    for (const track of project.tracks) {
+      for (const clip of track.clips) {
+        if (clip.id === excludeClipId) continue
+        points.push(clip.start) // Clip start
+        points.push(clip.start + (clip.out - clip.in)) // Clip end
+      }
+    }
+    return [...new Set(points)].sort((a, b) => a - b) // Remove duplicates and sort
+  }
+
+  // Helper function to find nearest snap point
+  const findNearestSnapPoint = (time, snapPoints, snapThreshold = 0.5) => {
+    for (const point of snapPoints) {
+      if (Math.abs(time - point) <= snapThreshold) {
+        return point
+      }
+    }
+    return time
   }
 
   const renderProject = async () => {
@@ -379,8 +404,9 @@ export default function App() {
           <div className="video-stage" ref={stageRef} style={{
             width:'100%',
             height:'auto',
-            aspectRatio: project ? `${project.width||1920} / ${project.height||1080}` : '16 / 9',
-            position:'relative'
+            aspectRatio: '16 / 9', // Always maintain 16:9 aspect ratio
+            position:'relative',
+            overflow: 'hidden'
           }}>
             {project?.tracks.filter(t=>t.type==='video').map((t, ti)=> t.clips.map(c=> {
               const file = files.find(f=>f.id===c.fileId)
@@ -390,7 +416,13 @@ export default function App() {
               const tok = (token || '').replace(/^Bearer\s+/,'')
               const previewUrl = `${API}/api/v1/preview?fileId=${file.id}&h=360&token=${encodeURIComponent(tok)}`
         return <video key={c.id} className="stage-layer" src={previewUrl} muted
-                style={{display: visible? 'block':'none' }}
+                style={{
+                  display: visible? 'block':'none',
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover', // Fill the 16:9 container, cropping if necessary
+                  objectPosition: 'center' // Center the content
+                }}
                 onLoadedMetadata={e=> e.currentTarget.currentTime = current}
                 ref={el=> { if (el && visible) el.currentTime = current }}
               />
@@ -435,8 +467,15 @@ export default function App() {
             const dx = e.clientX - dragRef.current.startX
             const dt = dx / pxPerSec
             const p = JSON.parse(JSON.stringify(projectRef.current || project))
-            const { trackIndex, clipIndex, origStart } = dragRef.current
-            p.tracks[trackIndex].clips[clipIndex].start = Math.max(0, origStart + dt)
+            const { trackIndex, clipIndex, origStart, clipId } = dragRef.current
+            
+            // Calculate new start time with snapping
+            const desiredStart = Math.max(0, origStart + dt)
+            const snapPoints = getSnapPoints(clipId)
+            const snappedStart = findNearestSnapPoint(desiredStart, snapPoints)
+            
+            p.tracks[trackIndex].clips[clipIndex].start = snappedStart
+            
             // detect hovered track by Y
             if (tracksInnerRef.current) {
               const rect = tracksInnerRef.current.getBoundingClientRect()
