@@ -430,13 +430,48 @@ router.post('/projects/:id/render', auth, async (req,res)=> {
     const files = await getUserFiles(req.user.username)
     const proj = projects[req.params.id]
     
+    console.log(`Render request for project ${req.params.id} by user ${req.user.username}`)
+    console.log(`Found ${files.length} files for user`)
+    console.log(`Project data:`, JSON.stringify(proj, null, 2))
+    
     if (!proj) return res.status(404).json({ error: 'not found' })
     if (req.user.role !== 'admin' && proj.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
 
     const { preset='crispstream', renditions=['1080p'] } = req.body || {}
 
-    // Build ffmpeg command
-    const cmd = await buildFfmpegCommand(proj, files, { preset, renditions })
+    // Prepare files for rendering - handle both local and S3 files
+    const processedFiles = []
+    const tempFiles = [] // Track temp files for cleanup
+    
+    for (const file of files) {
+      let filePath
+      
+      if (file.s3Key && config.features.useS3) {
+        // S3 file - generate presigned URL or download to temp location
+        try {
+          const signed = await presignDownload({ key: file.s3Key, expiresIn: 3600 })
+          filePath = signed.url
+          console.log(`Using presigned URL for file ${file.id}: ${file.s3Key}`)
+        } catch (s3Error) {
+          console.error(`Failed to get presigned URL for file ${file.id}:`, s3Error)
+          continue // Skip this file
+        }
+      } else if (file.path) {
+        // Local file
+        filePath = file.path
+      } else {
+        console.warn(`File ${file.id} has no path or s3Key, skipping`)
+        continue
+      }
+      
+      processedFiles.push({
+        ...file,
+        path: filePath
+      })
+    }
+
+    // Build ffmpeg command with processed files
+    const cmd = await buildFfmpegCommand(proj, processedFiles, { preset, renditions })
 
     // Output path
     const outId = uuidv4()
@@ -455,6 +490,17 @@ router.post('/projects/:id/render', auth, async (req,res)=> {
     } catch (e) {
       console.error('render error', e)
       res.status(500).json({ error:'render failed', detail: e.message })
+    } finally {
+      // Cleanup temp files
+      for (const tempPath of tempFiles) {
+        try {
+          if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath)
+          }
+        } catch (cleanupError) {
+          console.error('Failed to cleanup temp file:', tempPath, cleanupError)
+        }
+      }
     }
   } catch (error) {
     console.error('Error in render route:', error)

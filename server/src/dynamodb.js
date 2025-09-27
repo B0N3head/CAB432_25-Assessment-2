@@ -294,4 +294,72 @@ export class VideoEditorDB {
       return null
     }
   }
+
+  // Job management functions (for render jobs)
+  async saveUserJob(username, jobId, jobData) {
+    try {
+      // Get current user data
+      const currentData = await this.getUserData(username)
+      
+      // Initialize jobs array if it doesn't exist
+      if (!currentData.jobs) {
+        currentData.jobs = []
+      }
+      
+      // Find and update existing job or add new one
+      const existingIndex = currentData.jobs.findIndex(j => j.id === jobId)
+      if (existingIndex >= 0) {
+        currentData.jobs[existingIndex] = jobData
+      } else {
+        currentData.jobs.push(jobData)
+      }
+      
+      // Save back to DynamoDB
+      const command = new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          'qut-username': username,
+          ...currentData,
+          lastModified: new Date().toISOString()
+        }
+      })
+
+      await this.docClient.send(command)
+      console.log(`Job ${jobId} saved for user ${username}`)
+      return true
+    } catch (error) {
+      console.error('Error saving job to DynamoDB:', error)
+      throw error
+    }
+  }
+
+  async getUserJob(username, jobId) {
+    try {
+      const userData = await this.getUserData(username)
+      
+      if (userData.jobs) {
+        return userData.jobs.find(j => j.id === jobId)
+      }
+      
+      return null
+    } catch (error) {
+      console.error('Error getting user job from DynamoDB:', error)
+      return null
+    }
+  }
+
+  async getUserJobs(username) {
+    try {
+      const userData = await this.getUserData(username)
+      
+      if (userData.jobs) {
+        return userData.jobs
+      }
+      
+      return []
+    } catch (error) {
+      console.error('Error getting user jobs from DynamoDB:', error)
+      return []
+    }
+  }
 }
