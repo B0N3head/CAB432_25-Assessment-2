@@ -324,87 +324,15 @@ app.get('/api/v1/security/status', (req, res) => {
 // Static client
 app.use(express.static(path.join(__dirname, '..', 'public')))
 
-// Strict SPA fallback - only for legitimate application routes
+// Strict SPA fallback - only for legitimate routes
 app.get('*', (req, res) => {
-  const clientIP = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for']?.split(',')[0]
-  
-  // Only allow very specific SPA routes - whitelist approach
-  const allowedSPARoutes = [
-    '/',
-    '/login', 
-    '/editor',
-    '/projects',
-    '/files',
-    '/settings'
-  ]
-  
-  // Check if it's an allowed SPA route (strict whitelist)
-  const isAllowedSPARoute = allowedSPARoutes.includes(req.path)
-  
-  // Enhanced suspicious pattern detection
-  const hasSuspiciousPattern = req.path.includes('.') || 
-                              req.path.includes('config') || 
-                              req.path.includes('admin') ||
-                              req.path.includes('bin') ||
-                              req.path.includes('tmp') ||
-                              req.path.includes('var') ||
-                              req.path.includes('etc') ||
-                              req.path.includes('usr') ||
-                              req.path.includes('opt') ||
-                              req.path.includes('home') ||
-                              req.path.includes('root') ||
-                              req.path.includes('proc') ||
-                              req.path.includes('sys') ||
-                              req.path.includes('dev') ||
-                              req.path.includes('mnt') ||
-                              req.path.length > 20 || // Reduce max path length
-                              /[^a-zA-Z0-9\-_\/]/.test(req.path) || // Only allow safe characters
-                              /\/[a-z]+[0-9]+/.test(req.path) || // Block patterns like /aaa9
-                              /^\/(bin|tmp|var|etc|usr|opt|home|root|proc|sys|dev|mnt)/i || // Block system paths
-                              req.path.endsWith('/') && req.path !== '/' // Block trailing slashes except root
-  
-  // Block if suspicious pattern OR not in allowed routes
-  if (hasSuspiciousPattern || !isAllowedSPARoute) {
-    // Track this as suspicious activity
-    if (!ipTracker.has(clientIP)) {
-      ipTracker.set(clientIP, { requests: [], suspiciousCount: 0, banUntil: null })
-    }
-    
-    const ipData = ipTracker.get(clientIP)
-    ipData.suspiciousCount++
-    
-    // Log the specific reason for blocking
-    const reason = hasSuspiciousPattern ? 'suspicious pattern' : 'not in whitelist'
-    console.log(`Blocked SPA access attempt #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path} (${reason})`)
-    
-    // Apply progressive banning for SPA route abuse
-    let banDuration = 0
-    if (ipData.suspiciousCount >= 5) {
-      banDuration = 30 * 60 * 1000  // 30 minutes
-    } else if (ipData.suspiciousCount >= 3) {
-      banDuration = 10 * 60 * 1000  // 10 minutes
-    } else if (ipData.suspiciousCount >= 2) {
-      banDuration = 5 * 60 * 1000   // 5 minutes
-    }
-    
-    if (banDuration > 0) {
-      ipData.banUntil = Date.now() + banDuration
-      console.log(`IP ${clientIP} banned for ${banDuration/60000} minutes due to SPA route abuse`)
-      return res.status(429).json({ 
-        error: 'Too many invalid requests', 
-        message: `Access denied due to suspicious activity`,
-        retryAfter: banDuration / 1000
-      })
-    }
-    
+  // Only serve SPA for legitimate client routes (no file extensions)
+  if (req.path.includes('.') || req.path.includes('config') || req.path.includes('admin')) {
     return res.status(404).json({ error: 'Not found' })
   }
   
-  // Log legitimate SPA route requests (only for debugging)
-  if (req.path !== '/') {
-    console.log(`SPA route: ${req.path} from ${clientIP}`)
-  }
-  
+  // Log legitimate SPA route requests
+  console.log(`SPA route: ${req.path} from ${req.ip}`)
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'))
 })
 
