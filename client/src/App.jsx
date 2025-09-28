@@ -75,8 +75,16 @@ export default function App() {
     if (!token) return
     try {
       const u = jwtDecode(token.split(' ')[1] || token)
-  setUser(u)
-  setView('editor')
+      // Handle both Cognito and legacy JWT token structures
+      const userData = {
+        id: u.sub || u.id,
+        username: u['cognito:username'] || u.username || u.email || 'unknown',
+        role: u.role || (u['cognito:groups'] && u['cognito:groups'].includes('Admin') ? 'admin' : 
+                         u['cognito:groups'] && u['cognito:groups'].includes('Editor') ? 'editor' : 'viewer'),
+        groups: u['cognito:groups'] || []
+      }
+      setUser(userData)
+      setView('editor')
       fetchFiles(1)
       fetchProjects()
     } catch {}
@@ -295,7 +303,21 @@ export default function App() {
       ev.addEventListener('ping', ()=>{/*keep alive*/})
       ev.onerror = ()=> { ev.close() }
     }
-    if (res?.output) setStatus(`Done: ${API}${res.output}`)
+    if (res?.output) {
+      const videoUrl = `${API}${res.output}`
+      setStatus(
+        <>
+          Render complete! 
+          <button 
+            className="btn" 
+            onClick={() => window.open(videoUrl, '_blank')} 
+            style={{marginLeft: '8px'}}
+          >
+            Download Video
+          </button>
+        </>
+      )
+    }
   }
 
   const pxPerSec = zoom
