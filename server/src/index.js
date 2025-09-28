@@ -51,15 +51,15 @@ app.use((req, res, next) => {
   const ipData = ipTracker.get(clientIP)
   
   // Check if IP is currently banned
-  if (ipData.banUntil && now < ipData.banUntil) {
-    const remainingTime = Math.ceil((ipData.banUntil - now) / 1000 / 60)
-    console.log(`Temporary Banned IP ${clientIP} attempted access (${remainingTime}min remaining)`)
-    return res.status(429).json({ 
-      error: 'Too many requests', 
-      message: `Try again later :)`,
-      retryAfter: Math.ceil((ipData.banUntil - now) / 1000)
-    })
-  }
+  // if (ipData.banUntil && now < ipData.banUntil) {
+  //   const remainingTime = Math.ceil((ipData.banUntil - now) / 1000 / 60)
+  //   console.log(`Temporary Banned IP ${clientIP} attempted access (${remainingTime}min remaining)`)
+  //   return res.status(429).json({ 
+  //     error: 'Too many requests', 
+  //     message: `Try again later :)`,
+  //     retryAfter: Math.ceil((ipData.banUntil - now) / 1000)
+  //   })
+  // }
   
   // Security headers
   res.setHeader('X-Content-Type-Options', 'nosniff')
