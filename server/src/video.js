@@ -187,8 +187,6 @@ export async function buildFfmpegCommand(project, files, options){
     filterGraphParts.push(`${alabels.map(x=>`[${x}]`).join('')}amix=inputs=${alabels.length}:normalize=0[aout]`)
   }
 
-  const filtergraph = filterGraphParts.join(';')
-
   // Choose encoder speed/quality
   let presetName = 'medium'
   let crf = 20
@@ -202,15 +200,26 @@ export async function buildFfmpegCommand(project, files, options){
 
   const args = []
   args.push(...inputArgs)
-  args.push('-filter_complex', filtergraph)
-  args.push('-map', `[${vOutLabel}]`)
-  if (alabels.length>0) {
-    args.push('-map', '[aout]')
-    args.push(...acodec)
+  
+  // Handle empty projects (no clips) vs projects with clips
+  if (filterGraphParts.length === 0) {
+    // Empty project - just render the black background
+    args.push('-map', '0:v')
+    args.push('-an') // No audio for empty projects
   } else {
-    // No audio inputs; explicitly disable audio to avoid codec option errors
-    args.push('-an')
+    // Project has clips - use filter complex
+    const filtergraph = filterGraphParts.join(';')
+    args.push('-filter_complex', filtergraph)
+    args.push('-map', `[${vOutLabel}]`)
+    if (alabels.length>0) {
+      args.push('-map', '[aout]')
+      args.push(...acodec)
+    } else {
+      // No audio inputs; explicitly disable audio to avoid codec option errors
+      args.push('-an')
+    }
   }
+  
   args.push(...vcodec, '-movflags','+faststart')
   return args
 }
