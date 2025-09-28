@@ -51,15 +51,15 @@ app.use((req, res, next) => {
   const ipData = ipTracker.get(clientIP)
   
   // Check if IP is currently banned
-  // if (ipData.banUntil && now < ipData.banUntil) {
-  //   const remainingTime = Math.ceil((ipData.banUntil - now) / 1000 / 60)
-  //   console.log(`Temporary Banned IP ${clientIP} attempted access (${remainingTime}min remaining)`)
-  //   return res.status(429).json({ 
-  //     error: 'Too many requests', 
-  //     message: `Try again later :)`,
-  //     retryAfter: Math.ceil((ipData.banUntil - now) / 1000)
-  //   })
-  // }
+  if (ipData.banUntil && now < ipData.banUntil) {
+    const remainingTime = Math.ceil((ipData.banUntil - now) / 1000 / 60)
+    console.log(`Banned IP ${clientIP} attempted access (${remainingTime}min remaining)`)
+    return res.status(429).json({ 
+      error: 'Access denied', 
+      message: 'IP temporarily blocked',
+      retryAfter: Math.ceil((ipData.banUntil - now) / 1000)
+    })
+  }
   
   // Security headers
   res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -67,23 +67,114 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block')
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:")
+  
+  // Remove server fingerprinting
+  res.removeHeader('X-Powered-By')
   
   // Track request
   ipData.requests.push(now)
   
+  // Check for suspicious User-Agent and headers
+  const userAgent = req.get('User-Agent') || ''
+  const suspiciousAgents = [
+    /curl/i,
+    /wget/i,
+    /python/i,
+    /scanner/i,
+    /bot/i,
+    /crawler/i,
+    /spider/i,
+    /scraper/i,
+    /sqlmap/i,
+    /nmap/i,
+    /masscan/i,
+    /nuclei/i,
+    /gobuster/i,
+    /dirb/i,
+    /dirbuster/i,
+    /nikto/i,
+    /w3af/i,
+    /burpsuite/i,
+    /owasp/i,
+    /acunetix/i,
+    /nessus/i,
+    /openvas/i,
+    /^$/  // Empty user agent
+  ]
+  
+  const hasSuspiciousAgent = suspiciousAgents.some(pattern => pattern.test(userAgent))
+  
+  if (hasSuspiciousAgent && !req.path.startsWith('/api/v1/health')) {
+    ipData.suspiciousCount++
+    console.log(`Suspicious User-Agent from ${clientIP}: "${userAgent}" accessing ${req.path}`)
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+  
   // Block suspicious requests early
   const suspiciousPatterns = [
     /\/config\//i,
-    /\.(env|ini|conf|cfg|bak|old|sql|log|zip|tar\.gz)$/i,
+    /\.(env|ini|conf|cfg|bak|old|sql|log|zip|tar\.gz|yaml|yml|json|xml|txt)$/i,
     /wp-config/i,
+    /wp-content/i,
+    /wp-admin/i,
+    /wp-login/i,
     /\.git/i,
     /\.svn/i,
-    /admin/i,
+    /\.hg/i,
+    /\/admin/i,
+    /\/administrator/i,
     /phpmyadmin/i,
     /xmlrpc/i,
     /cgi-bin/i,
+    /luci/i,  // Router admin interface
+    /awstats/i, // Web stats
+    /_profiler/i, // Debug profilers
+    /phpinfo/i,
+    /aws-secret/i,
+    /secret/i,
+    /password/i,
+    /backup/i,
+    /\.ssh/i,
+    /\.docker/i,
+    /docker-compose/i,
+    /package\.json/i,
+    /package-lock\.json/i,
+    /composer\./i,
     /\/\./,  // directory traversal attempts
-    /\.\./   // parent directory access attempts
+    /\.\./,   // parent directory access attempts
+    /PROPFIND/i, // WebDAV attacks
+    /php$/i,  // Direct PHP file access
+    /jsp$/i,  // JSP file access
+    /aspx?$/i, // ASP file access
+    /__pycache__/i,
+    /node_modules/i,
+    /\.vscode/i,
+    /\.idea/i,
+    /\/bins?\/$/i,  // Common probe paths
+    /\/tmp\/$/i,
+    /\/var\/$/i,
+    /\/etc\/$/i,
+    /\/usr\/$/i,
+    /\/opt\/$/i,
+    /\/home\/$/i,
+    /\/root\/$/i,
+    /\/proc\/$/i,
+    /\/sys\/$/i,
+    /\/dev\/$/i,
+    /\/mnt\/$/i,
+    /server-status/i,
+    /server-info/i,
+    /status/i,
+    /info\.php/i,
+    /test\.php/i,
+    /shell/i,
+    /cmd/i,
+    /console/i,
+    /terminal/i,
+    /debug/i,
+    /trace/i
   ]
   
   const isSuspicious = suspiciousPatterns.some(pattern => pattern.test(req.path))
@@ -92,14 +183,18 @@ app.use((req, res, next) => {
     ipData.suspiciousCount++
     console.log(`Suspicious request #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path}`)
     
-    // Progressive punishment system
+    // Aggressive progressive punishment system
     let banDuration = 0
-    if (ipData.suspiciousCount >= 5) {
-      banDuration = 30 * 60 * 1000  // 30 minutes
+    if (ipData.suspiciousCount >= 10) {
+      banDuration = 24 * 60 * 60 * 1000  // 24 hours for persistent attackers
+    } else if (ipData.suspiciousCount >= 5) {
+      banDuration = 60 * 60 * 1000  // 1 hour
     } else if (ipData.suspiciousCount >= 3) {
-      banDuration = 10 * 60 * 1000  // 10 minutes  
+      banDuration = 30 * 60 * 1000  // 30 minutes  
     } else if (ipData.suspiciousCount >= 2) {
-      banDuration = 5 * 60 * 1000   // 5 minutes
+      banDuration = 10 * 60 * 1000   // 10 minutes
+    } else if (ipData.suspiciousCount >= 1) {
+      banDuration = 2 * 60 * 1000   // 2 minutes for first offense
     }
     
     if (banDuration > 0) {
@@ -191,15 +286,57 @@ app.get('/api/v1/security/status', (req, res) => {
 // Static client
 app.use(express.static(path.join(__dirname, '..', 'public')))
 
-// Strict SPA fallback - only for legitimate routes
+// Strict SPA fallback - only for legitimate application routes
 app.get('*', (req, res) => {
-  // Only serve SPA for legitimate client routes (no file extensions)
-  if (req.path.includes('.') || req.path.includes('config') || req.path.includes('admin')) {
+  const clientIP = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for']?.split(',')[0]
+  
+  // Only allow very specific SPA routes - whitelist approach
+  const allowedSPARoutes = [
+    '/',
+    '/login', 
+    '/editor',
+    '/projects',
+    '/files',
+    '/settings'
+  ]
+  
+  // Check if it's an allowed SPA route or root
+  const isAllowedSPARoute = allowedSPARoutes.includes(req.path) || req.path === '/'
+  
+  // Block any path with file extensions, suspicious patterns, or not in whitelist
+  const hasSuspiciousPattern = req.path.includes('.') || 
+                              req.path.includes('config') || 
+                              req.path.includes('admin') ||
+                              req.path.includes('bin') ||
+                              req.path.includes('tmp') ||
+                              req.path.includes('var') ||
+                              req.path.includes('etc') ||
+                              req.path.includes('usr') ||
+                              req.path.includes('opt') ||
+                              req.path.includes('home') ||
+                              req.path.includes('root') ||
+                              req.path.length > 50 || // Suspiciously long paths
+                              /[^a-zA-Z0-9\-_\/]/.test(req.path) // Only allow alphanumeric, dash, underscore, slash
+  
+  if (hasSuspiciousPattern || !isAllowedSPARoute) {
+    // Track this as suspicious activity if not a simple 404
+    if (!ipTracker.has(clientIP)) {
+      ipTracker.set(clientIP, { requests: [], suspiciousCount: 0, banUntil: null })
+    }
+    
+    const ipData = ipTracker.get(clientIP)
+    ipData.suspiciousCount++
+    
+    console.log(`Blocked SPA access attempt #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path}`)
+    
     return res.status(404).json({ error: 'Not found' })
   }
   
-  // Log legitimate SPA route requests
-  console.log(`SPA route: ${req.path} from ${req.ip}`)
+  // Log legitimate SPA route requests (only for debugging)
+  if (req.path !== '/') {
+    console.log(`SPA route: ${req.path} from ${clientIP}`)
+  }
+  
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'))
 })
 
