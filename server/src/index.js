@@ -76,8 +76,37 @@ app.use((req, res, next) => {
   // Track request
   ipData.requests.push(now)
   
-  // Check for suspicious User-Agent and headers
+  // Whitelist for legitimate services that should bypass security checks
+  const isWhitelistedEndpoint = req.path === '/api/v1/health' || req.path === '/api/v1/version'
+  const isAWSInternalIP = /^::ffff:(172\.31\.|127\.0\.0\.1|10\.|192\.168\.)/.test(clientIP) || 
+                          /^(172\.31\.|127\.0\.0\.1|10\.|192\.168\.)/.test(clientIP)
+  
+  // Skip security checks for whitelisted endpoints from AWS internal networks
+  if (isWhitelistedEndpoint && isAWSInternalIP) {
+    return next()
+  }
+  
+  // Check for suspicious User-Agent and headers (but allow legitimate monitoring)
   const userAgent = req.get('User-Agent') || ''
+  
+  // Allow legitimate monitoring tools and AWS health checks
+  const legitimateAgents = [
+    /amazon/i,
+    /aws/i,
+    /elb-healthchecker/i,
+    /cloudfront/i,
+    /route53/i,
+    /health/i,
+    /monitor/i,
+    /check/i,
+    /uptime/i,
+    /pingdom/i,
+    /datadog/i,
+    /newrelic/i
+  ]
+  
+  const isLegitimateAgent = legitimateAgents.some(pattern => pattern.test(userAgent))
+  
   const suspiciousAgents = [
     /curl/i,
     /wget/i,
@@ -106,7 +135,8 @@ app.use((req, res, next) => {
   
   const hasSuspiciousAgent = suspiciousAgents.some(pattern => pattern.test(userAgent))
   
-  if (hasSuspiciousAgent && !req.path.startsWith('/api/v1/health')) {
+  // Only block suspicious agents if not a legitimate monitoring tool and not accessing whitelisted endpoints
+  if (hasSuspiciousAgent && !isLegitimateAgent && !isWhitelistedEndpoint) {
     ipData.suspiciousCount++
     console.log(`Suspicious User-Agent from ${clientIP}: "${userAgent}" accessing ${req.path}`)
     return res.status(403).json({ error: 'Forbidden' })
@@ -166,7 +196,6 @@ app.use((req, res, next) => {
     /\/mnt\/$/i,
     /server-status/i,
     /server-info/i,
-    /status/i,
     /info\.php/i,
     /test\.php/i,
     /shell/i,
@@ -182,7 +211,8 @@ app.use((req, res, next) => {
   
   const isSuspicious = suspiciousPatterns.some(pattern => pattern.test(req.path))
   
-  if (isSuspicious) {
+  // Skip suspicious pattern check for whitelisted endpoints
+  if (isSuspicious && !isWhitelistedEndpoint) {
     ipData.suspiciousCount++
     console.log(`Suspicious request #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path}`)
     
@@ -214,12 +244,17 @@ app.use((req, res, next) => {
   }
   
   // Rate limiting for legitimate requests (prevent spam)
+  // More lenient rate limiting for AWS internal IPs and health checks
   const oneMinuteAgo = now - 60 * 1000
   const recentRequests = ipData.requests.filter(time => time > oneMinuteAgo)
+  const rateLimit = (isAWSInternalIP && isWhitelistedEndpoint) ? 600 : 120 // Higher limit for health checks
   
-  if (recentRequests.length > 120) { // Max 120 requests per minute
-    console.log(`Rate limit exceeded for ${clientIP}: ${recentRequests.length} requests/min`)
-    ipData.banUntil = now + 5 * 60 * 1000 // 5 minute timeout
+  if (recentRequests.length > rateLimit) {
+    console.log(`Rate limit exceeded for ${clientIP}: ${recentRequests.length} requests/min (limit: ${rateLimit})`)
+    // Don't ban AWS internal IPs for health check rate limits
+    if (!isAWSInternalIP) {
+      ipData.banUntil = now + 5 * 60 * 1000 // 5 minute timeout for external IPs only
+    }
     return res.status(429).json({ 
       error: 'Rate limit exceeded', 
       message: 'Too many requests',
