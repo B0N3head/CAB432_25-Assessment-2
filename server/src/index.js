@@ -51,15 +51,15 @@ app.use((req, res, next) => {
   const ipData = ipTracker.get(clientIP)
   
   // Check if IP is currently banned
-  if (ipData.banUntil && now < ipData.banUntil) {
-    const remainingTime = Math.ceil((ipData.banUntil - now) / 1000 / 60)
-    console.log(`Banned IP ${clientIP} attempted access (${remainingTime}min remaining)`)
-    return res.status(429).json({ 
-      error: 'Access denied', 
-      message: 'IP temporarily blocked',
-      retryAfter: Math.ceil((ipData.banUntil - now) / 1000)
-    })
-  }
+  // if (ipData.banUntil && now < ipData.banUntil) {
+  //   const remainingTime = Math.ceil((ipData.banUntil - now) / 1000 / 60)
+  //   console.log(`Temporary Banned IP ${clientIP} attempted access (${remainingTime}min remaining)`)
+  //   return res.status(429).json({ 
+  //     error: 'Too many requests', 
+  //     message: `Try again later :)`,
+  //     retryAfter: Math.ceil((ipData.banUntil - now) / 1000)
+  //   })
+  // }
   
   // Security headers
   res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -67,167 +67,39 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block')
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https:")
-  
-  // Remove server fingerprinting
-  res.removeHeader('X-Powered-By')
   
   // Track request
   ipData.requests.push(now)
   
-  // Whitelist for legitimate services that should bypass security checks
-  const isWhitelistedEndpoint = req.path === '/api/v1/health' || req.path === '/api/v1/version'
-  const isAWSInternalIP = /^::ffff:(172\.31\.|127\.0\.0\.1|10\.|192\.168\.)/.test(clientIP) || 
-                          /^(172\.31\.|127\.0\.0\.1|10\.|192\.168\.)/.test(clientIP)
-  
-  // Skip security checks for whitelisted endpoints from AWS internal networks
-  if (isWhitelistedEndpoint && isAWSInternalIP) {
-    return next()
-  }
-  
-  // Check for suspicious User-Agent and headers (but allow legitimate monitoring)
-  const userAgent = req.get('User-Agent') || ''
-  
-  // Allow legitimate monitoring tools and AWS health checks
-  const legitimateAgents = [
-    /amazon/i,
-    /aws/i,
-    /elb-healthchecker/i,
-    /cloudfront/i,
-    /route53/i,
-    /health/i,
-    /monitor/i,
-    /check/i,
-    /uptime/i,
-    /pingdom/i,
-    /datadog/i,
-    /newrelic/i
-  ]
-  
-  const isLegitimateAgent = legitimateAgents.some(pattern => pattern.test(userAgent))
-  
-  const suspiciousAgents = [
-    /curl/i,
-    /wget/i,
-    /python/i,
-    /scanner/i,
-    /bot/i,
-    /crawler/i,
-    /spider/i,
-    /scraper/i,
-    /sqlmap/i,
-    /nmap/i,
-    /masscan/i,
-    /nuclei/i,
-    /gobuster/i,
-    /dirb/i,
-    /dirbuster/i,
-    /nikto/i,
-    /w3af/i,
-    /burpsuite/i,
-    /owasp/i,
-    /acunetix/i,
-    /nessus/i,
-    /openvas/i,
-    /^$/  // Empty user agent
-  ]
-  
-  const hasSuspiciousAgent = suspiciousAgents.some(pattern => pattern.test(userAgent))
-  
-  // Only block suspicious agents if not a legitimate monitoring tool and not accessing whitelisted endpoints
-  if (hasSuspiciousAgent && !isLegitimateAgent && !isWhitelistedEndpoint) {
-    ipData.suspiciousCount++
-    console.log(`Suspicious User-Agent from ${clientIP}: "${userAgent}" accessing ${req.path}`)
-    return res.status(403).json({ error: 'Forbidden' })
-  }
-  
   // Block suspicious requests early
   const suspiciousPatterns = [
     /\/config\//i,
-    /\.(env|ini|conf|cfg|bak|old|sql|log|zip|tar\.gz|yaml|yml|json|xml|txt)$/i,
+    /\.(env|ini|conf|cfg|bak|old|sql|log|zip|tar\.gz)$/i,
     /wp-config/i,
-    /wp-content/i,
-    /wp-admin/i,
-    /wp-login/i,
     /\.git/i,
     /\.svn/i,
-    /\.hg/i,
-    /\/admin/i,
-    /\/administrator/i,
+    /admin/i,
     /phpmyadmin/i,
     /xmlrpc/i,
     /cgi-bin/i,
-    /luci/i,  // Router admin interface
-    /awstats/i, // Web stats
-    /_profiler/i, // Debug profilers
-    /phpinfo/i,
-    /aws-secret/i,
-    /secret/i,
-    /password/i,
-    /backup/i,
-    /\.ssh/i,
-    /\.docker/i,
-    /docker-compose/i,
-    /package\.json/i,
-    /package-lock\.json/i,
-    /composer\./i,
     /\/\./,  // directory traversal attempts
-    /\.\./,   // parent directory access attempts
-    /PROPFIND/i, // WebDAV attacks
-    /php$/i,  // Direct PHP file access
-    /jsp$/i,  // JSP file access
-    /aspx?$/i, // ASP file access
-    /__pycache__/i,
-    /node_modules/i,
-    /\.vscode/i,
-    /\.idea/i,
-    /\/bins?\/$/i,  // Common probe paths
-    /\/tmp\/$/i,
-    /\/var\/$/i,
-    /\/etc\/$/i,
-    /\/usr\/$/i,
-    /\/opt\/$/i,
-    /\/home\/$/i,
-    /\/root\/$/i,
-    /\/proc\/$/i,
-    /\/sys\/$/i,
-    /\/dev\/$/i,
-    /\/mnt\/$/i,
-    /server-status/i,
-    /server-info/i,
-    /info\.php/i,
-    /test\.php/i,
-    /shell/i,
-    /cmd/i,
-    /console/i,
-    /terminal/i,
-    /debug/i,
-    /trace/i,
-    /\/[a-z]+[0-9]+/,  // Patterns like /aaa9, /test123
-    /\/bins?\/$/i,     // /bin/ or /bins/ with trailing slash
-    /\/[a-z]{3,6}\/$/i // Short random paths with trailing slash like /aaa/
+    /\.\./   // parent directory access attempts
   ]
   
   const isSuspicious = suspiciousPatterns.some(pattern => pattern.test(req.path))
   
-  // Skip suspicious pattern check for whitelisted endpoints
-  if (isSuspicious && !isWhitelistedEndpoint) {
+  if (isSuspicious) {
     ipData.suspiciousCount++
     console.log(`Suspicious request #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path}`)
     
-    // Aggressive progressive punishment system
+    // Progressive punishment system
     let banDuration = 0
-    if (ipData.suspiciousCount >= 10) {
-      banDuration = 24 * 60 * 60 * 1000  // 24 hours for persistent attackers
-    } else if (ipData.suspiciousCount >= 5) {
-      banDuration = 60 * 60 * 1000  // 1 hour
+    if (ipData.suspiciousCount >= 5) {
+      banDuration = 30 * 60 * 1000  // 30 minutes
     } else if (ipData.suspiciousCount >= 3) {
-      banDuration = 30 * 60 * 1000  // 30 minutes  
+      banDuration = 10 * 60 * 1000  // 10 minutes  
     } else if (ipData.suspiciousCount >= 2) {
-      banDuration = 10 * 60 * 1000   // 10 minutes
-    } else if (ipData.suspiciousCount >= 1) {
-      banDuration = 2 * 60 * 1000   // 2 minutes for first offense
+      banDuration = 5 * 60 * 1000   // 5 minutes
     }
     
     if (banDuration > 0) {
@@ -244,17 +116,12 @@ app.use((req, res, next) => {
   }
   
   // Rate limiting for legitimate requests (prevent spam)
-  // More lenient rate limiting for AWS internal IPs and health checks
   const oneMinuteAgo = now - 60 * 1000
   const recentRequests = ipData.requests.filter(time => time > oneMinuteAgo)
-  const rateLimit = (isAWSInternalIP && isWhitelistedEndpoint) ? 600 : 120 // Higher limit for health checks
   
-  if (recentRequests.length > rateLimit) {
-    console.log(`Rate limit exceeded for ${clientIP}: ${recentRequests.length} requests/min (limit: ${rateLimit})`)
-    // Don't ban AWS internal IPs for health check rate limits
-    if (!isAWSInternalIP) {
-      ipData.banUntil = now + 5 * 60 * 1000 // 5 minute timeout for external IPs only
-    }
+  if (recentRequests.length > 120) { // Max 120 requests per minute
+    console.log(`Rate limit exceeded for ${clientIP}: ${recentRequests.length} requests/min`)
+    ipData.banUntil = now + 5 * 60 * 1000 // 5 minute timeout
     return res.status(429).json({ 
       error: 'Rate limit exceeded', 
       message: 'Too many requests',

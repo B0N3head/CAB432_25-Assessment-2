@@ -73,41 +73,55 @@ router.get('/health', (_, res)=> {
 router.get('/version', (_, res)=> {
   const versionInfo = getVersionInfo()
   res.json({
-    // Only expose essential version info, not deployment details
     server: {
-      version: versionInfo.serverVersion
+      version: versionInfo.serverVersion,
+      buildTime: versionInfo.buildTime,
+      gitHash: versionInfo.gitHash,
+      deployDate: versionInfo.deployDate
     },
     client: {
       version: versionInfo.clientVersion
     },
-    api: 'v1'
+    api: 'v1',
+    timestamp: new Date().toISOString()
   })
 })
 
 router.get('/config', (_, res)=> {
-  // Only expose minimal configuration needed by client
-  // Do not expose sensitive infrastructure details
+  const versionInfo = getVersionInfo()
+
   res.json({
-    // Version info for compatibility checking
-    serverVersion: getVersionInfo().serverVersion,
-    clientVersion: getVersionInfo().clientVersion,
-    
-    // Feature flags needed by client
-    features: {
-      // Only expose client-relevant feature flags
-      useCognito: config.features.useCognito,
-      useS3: config.features.useS3
-    },
-    
-    // Only Cognito info needed for client authentication
-    cognito: config.features.useCognito ? { 
+    serverVersion: versionInfo.serverVersion,
+    clientVersion: versionInfo.clientVersion,
+    buildTime: versionInfo.buildTime,
+    gitHash: versionInfo.gitHash,
+    deployDate: versionInfo.deployDate,
+    region: config.region,
+    features: config.features,
+    cognito: { 
       domain: config.cognito.domain, 
       clientId: config.cognito.clientId, 
-      redirectUri: config.cognito.redirectUri || ''
-    } : null,
-    
-    // API version for client compatibility
-    api: 'v1'
+      userPoolId: !!config.cognito.userPoolId ? 'configured' : '',
+      redirectUri: config.cognito.redirectUri || '',
+      hasClientSecret: !!config.cognito.clientSecret
+    },
+    s3: { 
+      bucket: config.s3.bucket, 
+      prefixes: { 
+        uploads: config.s3.uploadsPrefix, 
+        outputs: config.s3.outputsPrefix, 
+        thumbs: config.s3.thumbsPrefix 
+      } 
+    },
+    secretsManager: {
+      enabled: config.features.useSecretsManager,
+      loadedSecrets: {
+        jwt: !!config.jwtSecret && config.jwtSecret !== 'devsecret',
+        cognito: !!config.cognito.clientSecret,
+        database: !!(config.database && config.database.accessKeyId),
+        externalApis: !!(config.externalApis && Object.keys(config.externalApis).length > 0)
+      }
+    }
   })
 })
 
