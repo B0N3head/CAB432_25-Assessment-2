@@ -192,7 +192,33 @@ const storage = multer.diskStorage({
     cb(null, `${id}${ext}`)
   }
 })
-const upload = multer({ storage })
+
+// Configure multer with strict limits to prevent server hangs
+const upload = multer({ 
+  storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max file size
+    files: 10, // Maximum 10 files per upload
+    fields: 20, // Maximum 20 form fields
+    fieldSize: 1 * 1024 * 1024, // 1MB max field size
+    headerPairs: 2000 // Maximum header pairs
+  },
+  fileFilter: (req, file, cb) => {
+    // Only allow common video/image formats to prevent abuse
+    const allowedMimeTypes = [
+      'video/mp4', 'video/avi', 'video/mov', 'video/quicktime', 'video/x-msvideo',
+      'video/webm', 'video/ogg', 'video/3gpp', 'video/x-ms-wmv',
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+      'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp3', 'audio/mp4'
+    ]
+    
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true)
+    } else {
+      cb(new Error(`File type ${file.mimetype} not allowed. Only video, audio, and image files are permitted.`))
+    }
+  }
+})
 
 // ---- Files ----
 router.get('/files', auth, async (req,res)=> {
@@ -224,8 +250,55 @@ router.get('/files', auth, async (req,res)=> {
 })
 
 // If S3 is configured, prefer presigned uploads from client
-router.post('/files', auth, upload.array('files', 20), async (req,res)=> {
+router.post('/files', auth, (req, res, next) => {
+  // Handle multer errors before processing
+  upload.array('files', 10)(req, res, (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        // Handle specific multer errors
+        switch (err.code) {
+          case 'LIMIT_FILE_SIZE':
+            return res.status(413).json({ 
+              error: 'File too large', 
+              message: 'File size cannot exceed 100MB',
+              code: 'FILE_TOO_LARGE'
+            })
+          case 'LIMIT_FILE_COUNT':
+            return res.status(413).json({ 
+              error: 'Too many files', 
+              message: 'Cannot upload more than 10 files at once',
+              code: 'TOO_MANY_FILES'
+            })
+          case 'LIMIT_UNEXPECTED_FILE':
+            return res.status(400).json({ 
+              error: 'Unexpected file field',
+              message: 'Invalid file upload field',
+              code: 'UNEXPECTED_FIELD'
+            })
+          default:
+            return res.status(400).json({ 
+              error: 'Upload error', 
+              message: err.message,
+              code: err.code
+            })
+        }
+      } else {
+        // Handle custom file filter errors
+        return res.status(400).json({ 
+          error: 'File validation failed', 
+          message: err.message,
+          code: 'INVALID_FILE_TYPE'
+        })
+      }
+    }
+    next()
+  })
+}, async (req,res)=> {
   try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' })
+    }
+
     const saved = []
     for (const file of req.files) {
       const id = path.basename(file.filename, path.extname(file.filename))
@@ -234,39 +307,116 @@ router.post('/files', auth, upload.array('files', 20), async (req,res)=> {
         id, ownerId: req.user.id, path: file.path, name: file.originalname, mimetype,
         url: `/media/uploads/${req.user.id}/${file.filename}`, createdAt: Date.now()
       }
-      // Optional: generate thumbnail for videos
+      
+      // Optional: generate thumbnail for videos (with timeout)
       try {
         if (mimetype.startsWith('video')) {
           const thumb = path.join(__dirname, '..', 'data', 'thumbnails', `${id}.jpg`)
-          await generateThumbnail(file.path, thumb)
+          
+          // Add timeout for thumbnail generation to prevent hanging
+          const thumbnailPromise = generateThumbnail(file.path, thumb)
+          const timeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Thumbnail generation timeout')), 30000)
+          )
+          
+          await Promise.race([thumbnailPromise, timeout])
           fileRec.thumbnail = `/media/thumbnails/${id}.jpg`
-          const meta = await probeMedia(file.path)
+          
+          // Add timeout for media probing
+          const probePromise = probeMedia(file.path)
+          const probeTimeout = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Media probe timeout')), 15000)
+          )
+          
+          const meta = await Promise.race([probePromise, probeTimeout])
           if (meta?.format?.duration) fileRec.duration = parseFloat(meta.format.duration)
         }
-      } catch (e) { console.error('thumb/probe error', e) }
+      } catch (e) { 
+        console.error('thumb/probe error for file', file.originalname, ':', e.message)
+        // Continue processing even if thumbnail/probe fails
+      }
 
       await saveUserFile(req.user.username, fileRec)
       saved.push(fileRec)
     }
+    
+    console.log(`Successfully processed ${saved.length} files for user ${req.user.username}`)
     res.status(201).json({ items: saved })
   } catch (error) {
     console.error('Error processing file upload:', error)
-    res.status(500).json({ error: 'Failed to process uploaded files' })
+    
+    // Clean up uploaded files if processing fails
+    if (req.files) {
+      req.files.forEach(file => {
+        try {
+          if (fs.existsSync(file.path)) {
+            fs.unlinkSync(file.path)
+          }
+        } catch (e) {
+          console.error('Error cleaning up file:', file.path, e)
+        }
+      })
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to process uploaded files',
+      message: error.message 
+    })
   }
 })
 
 // S3 presign endpoints (used when client uploads directly to S3)
 router.post('/files/presign-upload', auth, async (req,res)=> {
   if (!config.features.useS3) return res.status(400).json({ error: 'S3 not configured' })
-  const { filename, contentType } = req.body || {}
-  if (!filename || !contentType) return res.status(400).json({ error: 'filename and contentType required' })
+  
+  const { filename, contentType, fileSize } = req.body || {}
+  if (!filename || !contentType) {
+    return res.status(400).json({ error: 'filename and contentType required' })
+  }
+  
+  // Validate file size (100MB limit for S3 uploads too)
+  const maxFileSize = 100 * 1024 * 1024 // 100MB
+  if (fileSize && fileSize > maxFileSize) {
+    return res.status(413).json({ 
+      error: 'File too large', 
+      message: `File size (${Math.round(fileSize / 1024 / 1024)}MB) exceeds maximum allowed size (100MB)`,
+      code: 'FILE_TOO_LARGE'
+    })
+  }
+  
+  // Validate content type
+  const allowedMimeTypes = [
+    'video/mp4', 'video/avi', 'video/mov', 'video/quicktime', 'video/x-msvideo',
+    'video/webm', 'video/ogg', 'video/3gpp', 'video/x-ms-wmv',
+    'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+    'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp3', 'audio/mp4'
+  ]
+  
+  if (!allowedMimeTypes.includes(contentType)) {
+    return res.status(400).json({ 
+      error: 'Invalid file type', 
+      message: `File type ${contentType} not allowed. Only video, audio, and image files are permitted.`,
+      code: 'INVALID_FILE_TYPE'
+    })
+  }
+  
   const id = uuidv4()
   const ext = path.extname(filename)
   const key = `${config.s3.uploadsPrefix}${req.user.id}/${id}${ext}`
-  console.log('Presign request:', { filename, contentType, key, userId: req.user.id })
+  
+  console.log('Presign request:', { 
+    filename, 
+    contentType, 
+    key, 
+    userId: req.user.id,
+    fileSize: fileSize ? `${Math.round(fileSize / 1024 / 1024)}MB` : 'unknown'
+  })
+  
   try {
-    const signed = await presignUpload({ key, contentType })
-    res.json({ id, key, ...signed })
+    // Use shorter expiry for large files to prevent long-running uploads
+    const expires = fileSize && fileSize > 50 * 1024 * 1024 ? 1800 : 900 // 30min for large files, 15min for small
+    const signed = await presignUpload({ key, contentType, expires })
+    res.json({ id, key, ...signed, maxFileSize })
   } catch (e) { 
     console.error('Presign route error:', e)
     res.status(500).json({ error: 'presign failed', detail: e.message }) 

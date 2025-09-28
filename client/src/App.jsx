@@ -148,48 +148,99 @@ export default function App() {
     console.log('useS3 decision:', useS3)
     const selected = Array.from(e.target.files || [])
     if (selected.length === 0) return
+    
+    // Client-side file size validation (100MB limit)
+    const maxFileSize = 100 * 1024 * 1024 // 100MB
+    for (const f of selected) {
+      if (f.size > maxFileSize) {
+        alert(`File "${f.name}" is too large (${Math.round(f.size / 1024 / 1024)}MB). Maximum allowed size is 100MB.`)
+        return
+      }
+    }
+    
     if (!useS3) {
-      const form = new FormData()
-      for (const f of selected) form.append('files', f)
-      const res = await fetch(`${API}/api/v1/files`, { method: 'POST', headers: { 'Authorization': token }, body: form })
-      if (res.ok) { fetchFiles() }
+      try {
+        const form = new FormData()
+        for (const f of selected) form.append('files', f)
+        const res = await fetch(`${API}/api/v1/files`, { method: 'POST', headers: { 'Authorization': token }, body: form })
+        
+        if (!res.ok) {
+          const error = await res.json()
+          alert(`Upload failed: ${error.message || error.error}`)
+          return
+        }
+        
+        fetchFiles()
+      } catch (error) {
+        console.error('Upload error:', error)
+        alert('Upload failed: Network error or server unavailable')
+      }
       return
     }
+    
     // S3 presigned path
     for (const f of selected) {
-      const presignRes = await fetch(`${API}/api/v1/files/presign-upload`, {
-        method: 'POST',
-        headers: { 'Authorization': token, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: f.name, contentType: f.type || 'application/octet-stream' })
-      })
-      if (!presignRes.ok) { alert('Failed to get presigned URL'); return }
-      const presigned = await presignRes.json()
-      const putRes = await fetch(presigned.url, { method: 'PUT', headers: { 'Content-Type': f.type || 'application/octet-stream' }, body: f })
-      if (!putRes.ok) { alert('Upload to S3 failed'); return }
-
-      // Extract duration for video files before registering
-      let duration = null
-      if (f.type && f.type.startsWith('video/')) {
-        try {
-          duration = await new Promise((resolve, reject) => {
-            const video = document.createElement('video')
-            video.onloadedmetadata = () => {
-              resolve(video.duration)
-              URL.revokeObjectURL(video.src)
-            }
-            video.onerror = () => {
-              reject(new Error('Failed to load video metadata'))
-              URL.revokeObjectURL(video.src)
-            }
-            video.src = URL.createObjectURL(f)
+      try {
+        console.log(`Uploading ${f.name} (${Math.round(f.size / 1024 / 1024)}MB)...`)
+        
+        const presignRes = await fetch(`${API}/api/v1/files/presign-upload`, {
+          method: 'POST',
+          headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            filename: f.name, 
+            contentType: f.type || 'application/octet-stream',
+            fileSize: f.size
           })
-          console.log(`Extracted duration for ${f.name}: ${duration}s`)
-        } catch (e) {
-          console.error('Failed to extract video duration:', e)
+        })
+        
+        if (!presignRes.ok) {
+          const error = await presignRes.json()
+          alert(`Failed to get upload URL: ${error.message || error.error}`)
+          return
         }
-      }
+        
+        const presigned = await presignRes.json()
+        
+        // Upload to S3 with progress tracking
+        const putRes = await fetch(presigned.url, { 
+          method: 'PUT', 
+          headers: { 'Content-Type': f.type || 'application/octet-stream' }, 
+          body: f 
+        })
+        
+        if (!putRes.ok) {
+          console.error('S3 upload failed:', putRes.status, putRes.statusText)
+          alert(`Upload to S3 failed: ${putRes.status} ${putRes.statusText}`)
+          return
+        }
 
-      const registerData = {
+        // Extract duration for video files before registering (with timeout to prevent hangs)
+        let duration = null
+        if (f.type && f.type.startsWith('video/') && f.size < 50 * 1024 * 1024) { // Only for files < 50MB
+          try {
+            duration = await Promise.race([
+              new Promise((resolve, reject) => {
+                const video = document.createElement('video')
+                video.onloadedmetadata = () => {
+                  resolve(video.duration)
+                  URL.revokeObjectURL(video.src)
+                }
+                video.onerror = () => {
+                  reject(new Error('Failed to load video metadata'))
+                  URL.revokeObjectURL(video.src)
+                }
+                video.src = URL.createObjectURL(f)
+              }),
+              new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Video metadata extraction timeout')), 10000)
+              )
+            ])
+            console.log(`Extracted duration for ${f.name}: ${duration}s`)
+          } catch (e) {
+            console.warn('Failed to extract video duration for', f.name, ':', e.message)
+            // Skip duration extraction for problematic files
+          }
+        }      const registerData = {
         id: presigned.id,
         originalName: f.name,
         key: presigned.key,
@@ -197,12 +248,25 @@ export default function App() {
       }
       if (duration) registerData.duration = duration
 
-      const regRes = await fetch(`${API}/api/v1/files/register`, {
-        method: 'POST',
-        headers: { 'Authorization': token, 'Content-Type': 'application/json' },
-        body: JSON.stringify(registerData)
-      })
-      if (!regRes.ok) { alert('Register file failed'); return }
+        const regRes = await fetch(`${API}/api/v1/files/register`, {
+          method: 'POST',
+          headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+          body: JSON.stringify(registerData)
+        })
+        
+        if (!regRes.ok) {
+          const error = await regRes.json()
+          alert(`Failed to register file: ${error.message || error.error}`)
+          return
+        }
+        
+        console.log(`Successfully uploaded ${f.name}`)
+        
+      } catch (error) {
+        console.error('Upload error for file', f.name, ':', error)
+        alert(`Upload failed for "${f.name}": ${error.message || 'Unknown error'}`)
+        return
+      }
     }
     fetchFiles()
   }
