@@ -359,7 +359,8 @@ router.post('/projects', auth, async (req,res)=> {
       name, 
       width, 
       height, 
-      fps, 
+      fps,
+      fitMode: 'fit-in', // Default scaling mode: 'fit-in' (letterbox) or 'fit-out' (crop)
       tracks:[
         { id: uuidv4(), type: 'video', name:'V1', clips:[] },
         { id: uuidv4(), type: 'audio', name:'A1', clips:[] },
@@ -420,6 +421,41 @@ router.put('/projects/:id', auth, async (req,res)=> {
   } catch (error) {
     console.error('Error updating project:', error)
     res.status(500).json({ error: 'Failed to update project' })
+  }
+})
+
+// ---- Fit Mode Management ----
+router.put('/projects/:id/fit-mode', auth, async (req, res) => {
+  try {
+    const projects = await getUserProjects(req.user.username)
+    const projectId = req.params.id
+    const { fitMode } = req.body
+    
+    if (!projects[projectId]) {
+      return res.status(404).json({ error: 'Project not found' })
+    }
+    
+    if (req.user.role !== 'admin' && projects[projectId].ownerId !== req.user.id) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+    
+    if (!fitMode || !['fit-in', 'fit-out'].includes(fitMode)) {
+      return res.status(400).json({ error: 'Invalid fitMode. Must be "fit-in" or "fit-out"' })
+    }
+    
+    const updated = { 
+      ...projects[projectId], 
+      fitMode,
+      updatedAt: Date.now() 
+    }
+    
+    await saveUserProject(req.user.username, projectId, updated)
+    
+    console.log(`Updated fit mode for project ${projectId} to ${fitMode}`)
+    res.json({ fitMode: updated.fitMode, message: 'Fit mode updated successfully' })
+  } catch (error) {
+    console.error('Error updating fit mode:', error)
+    res.status(500).json({ error: 'Failed to update fit mode' })
   }
 })
 

@@ -92,16 +92,24 @@ export async function buildFfmpegCommand(project, files, options){
   // Force 16:9 aspect ratio for consistent output
   const width = 1920
   const height = 1080
-  const { fps=30, tracks=[] } = project
+  const { fps=30, tracks=[], fitMode='fit-in' } = project
   const { preset='crispstream', renditions=['1080p'] } = options || {}
 
   const videoClips = []
   const audioClips = []
-  for (const t of tracks){
+  
+  // Sort tracks by their order in the array (higher index = higher z-order/on top)
+  const sortedTracks = [...tracks].sort((a, b) => {
+    const aIndex = tracks.indexOf(a)
+    const bIndex = tracks.indexOf(b)
+    return aIndex - bIndex // Lower tracks first, higher tracks later (will overlay on top)
+  })
+  
+  for (const t of sortedTracks){
     for (const c of t.clips){
       const f = files.find(x=> x.id===c.fileId)
       if (!f) continue
-      const clip = { ...c, path: f.path, mimetype: f.mimetype, name:f.name }
+      const clip = { ...c, path: f.path, mimetype: f.mimetype, name:f.name, trackIndex: tracks.indexOf(t) }
       if (t.type==='video') videoClips.push(clip)
       else if (t.type==='audio') audioClips.push(clip)
     }
@@ -125,8 +133,18 @@ export async function buildFfmpegCommand(project, files, options){
   for (const clip of videoClips){
     inputArgs.push('-i', clip.path)
     const vlabel = `v${vi}`
-    // Improved scaling that maintains aspect ratio and centers content within 16:9
-    filterGraphParts.push(`[${vi}:v]trim=start=${clip.in}:end=${clip.out},setpts=PTS-STARTPTS,scale='min(${width},iw*${height}/ih)':'min(${height},ih*${width}/iw)':eval=frame,pad=${width}:${height}:(${width}-iw)/2:(${height}-ih)/2:black,format=yuva420p,setpts=PTS+${clip.start}/TB[${vlabel}]`)
+    
+    // Choose scaling based on project fitMode
+    let scaleFilter
+    if (fitMode === 'fit-out') {
+      // Fit-out: scale to fill entire frame, cropping if necessary (no black bars)
+      scaleFilter = `scale='max(${width},iw*${height}/ih)':'max(${height},ih*${width}/iw)':eval=frame,crop=${width}:${height}`
+    } else {
+      // Fit-in: scale to fit within frame, adding black bars if necessary (letterbox/pillarbox)
+      scaleFilter = `scale='min(${width},iw*${height}/ih)':'min(${height},ih*${width}/iw)':eval=frame,pad=${width}:${height}:(${width}-iw)/2:(${height}-ih)/2:black`
+    }
+    
+    filterGraphParts.push(`[${vi}:v]trim=start=${clip.in}:end=${clip.out},setpts=PTS-STARTPTS,${scaleFilter},format=yuva420p,setpts=PTS+${clip.start}/TB[${vlabel}]`)
     vlabels.push(vlabel)
     vi += 1
   }
@@ -146,13 +164,22 @@ export async function buildFfmpegCommand(project, files, options){
   }
   const vOutLabel = last
 
+  // Check if input files have audio streams before processing
   for (const clip of audioClips){
     inputArgs.push('-i', clip.path)
-    const alabel = `a${ai}`
-    const delayMs = Math.max(0, Math.floor(clip.start*1000))
-    // Apply delay to all channels; use all=1 to replicate delay across channels
-    filterGraphParts.push(`[${ai}:a]atrim=start=${clip.in}:end=${clip.out},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1[${alabel}]`)
-    alabels.push(alabel)
+    // Check if this input actually has audio by probing
+    const probe = await probeMedia(clip.path)
+    const hasAudio = probe?.streams?.some(s => s.codec_type === 'audio')
+    
+    if (hasAudio) {
+      const alabel = `a${ai}`
+      const delayMs = Math.max(0, Math.floor(clip.start*1000))
+      // Apply delay to all channels; use all=1 to replicate delay across channels
+      filterGraphParts.push(`[${ai}:a]atrim=start=${clip.in}:end=${clip.out},asetpts=PTS-STARTPTS,adelay=${delayMs}:all=1[${alabel}]`)
+      alabels.push(alabel)
+    } else {
+      console.log(`Warning: Input ${ai} (${clip.path}) has no audio stream, skipping audio processing`)
+    }
     ai += 1
   }
 
@@ -197,7 +224,7 @@ export async function execFfmpeg(args, outPath){
 export function execFfmpegWithProgress(args, outPath, jobId) {
   return new Promise((resolve, reject) => {
     const finalArgs = ['-hide_banner', ...args, '-y', outPath]
-    console.log('🎬 FFmpeg command:', 'ffmpeg', finalArgs.join(' '))
+    console.log('FFmpeg command:', 'ffmpeg', finalArgs.join(' '))
     
     const child = spawn('ffmpeg', finalArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stderr = ''
@@ -211,17 +238,17 @@ export function execFfmpegWithProgress(args, outPath, jobId) {
       }
     })
     child.on('error', (error) => {
-      console.error('🚨 FFmpeg process error:', error)
+      console.error('FFmpeg process error:', error)
       reject(error)
     })
     child.on('close', async (code) => {
       if (jobId) await cacheSet(`job:${jobId}`, { status: code === 0 ? 'done' : 'error', code, updatedAt: Date.now() }, 600)
       if (code === 0) {
-        console.log('✅ FFmpeg completed successfully')
+        console.log('FFmpeg completed successfully')
         resolve({ code, stderr })
       } else {
-        console.error('❌ FFmpeg failed with code:', code)
-        console.error('❌ FFmpeg stderr:', stderr)
+        console.error('FFmpeg failed with code:', code)
+        console.error('FFmpeg stderr:', stderr)
         reject(new Error(`ffmpeg failed (${code}): ${stderr}`))
       }
     })
@@ -234,7 +261,7 @@ export async function renderAndUploadVideo(project, files, options, username, pr
   const results = []
   
   for (const rendition of renditions) {
-    console.log(`🎬 Starting render for ${rendition}...`)
+    console.log(`Starting render for ${rendition}...`)
     
     // Create temporary output file
     const tempOutputPath = `/tmp/render_${projectId}_${rendition}_${Date.now()}.mp4`
