@@ -174,7 +174,10 @@ app.use((req, res, next) => {
     /console/i,
     /terminal/i,
     /debug/i,
-    /trace/i
+    /trace/i,
+    /\/[a-z]+[0-9]+/,  // Patterns like /aaa9, /test123
+    /\/bins?\/$/i,     // /bin/ or /bins/ with trailing slash
+    /\/[a-z]{3,6}\/$/i // Short random paths with trailing slash like /aaa/
   ]
   
   const isSuspicious = suspiciousPatterns.some(pattern => pattern.test(req.path))
@@ -300,10 +303,10 @@ app.get('*', (req, res) => {
     '/settings'
   ]
   
-  // Check if it's an allowed SPA route or root
-  const isAllowedSPARoute = allowedSPARoutes.includes(req.path) || req.path === '/'
+  // Check if it's an allowed SPA route (strict whitelist)
+  const isAllowedSPARoute = allowedSPARoutes.includes(req.path)
   
-  // Block any path with file extensions, suspicious patterns, or not in whitelist
+  // Enhanced suspicious pattern detection
   const hasSuspiciousPattern = req.path.includes('.') || 
                               req.path.includes('config') || 
                               req.path.includes('admin') ||
@@ -315,11 +318,19 @@ app.get('*', (req, res) => {
                               req.path.includes('opt') ||
                               req.path.includes('home') ||
                               req.path.includes('root') ||
-                              req.path.length > 50 || // Suspiciously long paths
-                              /[^a-zA-Z0-9\-_\/]/.test(req.path) // Only allow alphanumeric, dash, underscore, slash
+                              req.path.includes('proc') ||
+                              req.path.includes('sys') ||
+                              req.path.includes('dev') ||
+                              req.path.includes('mnt') ||
+                              req.path.length > 20 || // Reduce max path length
+                              /[^a-zA-Z0-9\-_\/]/.test(req.path) || // Only allow safe characters
+                              /\/[a-z]+[0-9]+/.test(req.path) || // Block patterns like /aaa9
+                              /^\/(bin|tmp|var|etc|usr|opt|home|root|proc|sys|dev|mnt)/i || // Block system paths
+                              req.path.endsWith('/') && req.path !== '/' // Block trailing slashes except root
   
+  // Block if suspicious pattern OR not in allowed routes
   if (hasSuspiciousPattern || !isAllowedSPARoute) {
-    // Track this as suspicious activity if not a simple 404
+    // Track this as suspicious activity
     if (!ipTracker.has(clientIP)) {
       ipTracker.set(clientIP, { requests: [], suspiciousCount: 0, banUntil: null })
     }
@@ -327,7 +338,29 @@ app.get('*', (req, res) => {
     const ipData = ipTracker.get(clientIP)
     ipData.suspiciousCount++
     
-    console.log(`Blocked SPA access attempt #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path}`)
+    // Log the specific reason for blocking
+    const reason = hasSuspiciousPattern ? 'suspicious pattern' : 'not in whitelist'
+    console.log(`Blocked SPA access attempt #${ipData.suspiciousCount} from ${clientIP}: ${req.method} ${req.path} (${reason})`)
+    
+    // Apply progressive banning for SPA route abuse
+    let banDuration = 0
+    if (ipData.suspiciousCount >= 5) {
+      banDuration = 30 * 60 * 1000  // 30 minutes
+    } else if (ipData.suspiciousCount >= 3) {
+      banDuration = 10 * 60 * 1000  // 10 minutes
+    } else if (ipData.suspiciousCount >= 2) {
+      banDuration = 5 * 60 * 1000   // 5 minutes
+    }
+    
+    if (banDuration > 0) {
+      ipData.banUntil = Date.now() + banDuration
+      console.log(`IP ${clientIP} banned for ${banDuration/60000} minutes due to SPA route abuse`)
+      return res.status(429).json({ 
+        error: 'Too many invalid requests', 
+        message: `Access denied due to suspicious activity`,
+        retryAfter: banDuration / 1000
+      })
+    }
     
     return res.status(404).json({ error: 'Not found' })
   }
