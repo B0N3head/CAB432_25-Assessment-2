@@ -197,6 +197,8 @@ export async function execFfmpeg(args, outPath){
 export function execFfmpegWithProgress(args, outPath, jobId) {
   return new Promise((resolve, reject) => {
     const finalArgs = ['-hide_banner', ...args, '-y', outPath]
+    console.log('🎬 FFmpeg command:', 'ffmpeg', finalArgs.join(' '))
+    
     const child = spawn('ffmpeg', finalArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stderr = ''
     child.stderr.on('data', async (d) => {
@@ -208,11 +210,20 @@ export function execFfmpegWithProgress(args, outPath, jobId) {
         await cacheSet(`job:${jobId}`, { status: 'running', time: m[1], updatedAt: Date.now() }, 300)
       }
     })
-    child.on('error', reject)
+    child.on('error', (error) => {
+      console.error('🚨 FFmpeg process error:', error)
+      reject(error)
+    })
     child.on('close', async (code) => {
       if (jobId) await cacheSet(`job:${jobId}`, { status: code === 0 ? 'done' : 'error', code, updatedAt: Date.now() }, 600)
-      if (code === 0) resolve({ code, stderr })
-      else reject(new Error(`ffmpeg failed (${code})`))
+      if (code === 0) {
+        console.log('✅ FFmpeg completed successfully')
+        resolve({ code, stderr })
+      } else {
+        console.error('❌ FFmpeg failed with code:', code)
+        console.error('❌ FFmpeg stderr:', stderr)
+        reject(new Error(`ffmpeg failed (${code}): ${stderr}`))
+      }
     })
   })
 }

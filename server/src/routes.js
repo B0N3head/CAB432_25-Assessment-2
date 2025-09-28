@@ -447,11 +447,16 @@ router.post('/projects/:id/render', auth, async (req,res)=> {
       let filePath
       
       if (file.s3Key && config.features.useS3) {
-        // S3 file - generate presigned URL or download to temp location
+        // S3 file - generate presigned URL with shorter expiry to avoid URL length issues
         try {
-          const signed = await presignDownload({ key: file.s3Key, expiresIn: 3600 })
+          const signed = await presignDownload({ key: file.s3Key, expiresIn: 1800 }) // 30 minutes
           filePath = signed.url
           console.log(`Using presigned URL for file ${file.id}: ${file.s3Key}`)
+          
+          // Validate URL length (ffmpeg may have issues with very long URLs)
+          if (filePath.length > 2000) {
+            console.warn(`Presigned URL is very long (${filePath.length} chars), this may cause ffmpeg issues`)
+          }
         } catch (s3Error) {
           console.error(`Failed to get presigned URL for file ${file.id}:`, s3Error)
           continue // Skip this file
