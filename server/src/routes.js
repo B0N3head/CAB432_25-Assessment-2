@@ -136,7 +136,7 @@ router.get('/preview', auth, async (req,res)=> {
     } else {
       f = await getUserFile(req.user.username, fileId)
     }
-    
+    //
     if (!f) return res.status(404).json({ error: 'not found' })
     if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
 
