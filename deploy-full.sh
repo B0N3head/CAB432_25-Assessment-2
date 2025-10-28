@@ -109,15 +109,15 @@ else
 fi
 cd ..
 
-# Step 4: Build backend image
-echo -e "\n\033[1;33m[4/8] Building backend Docker image...\033[0m"
-docker build -f Dockerfile.backend -t ${BACKEND_IMAGE}:latest . > /dev/null 2>&1
-if [ $? -eq 0 ]; then
-    echo -e "  \033[1;32m✓ Backend image built: ${BACKEND_IMAGE}:latest\033[0m"
-else
-    echo -e "  \033[1;31m✗ Backend build failed\033[0m"
-    exit 1
-fi
+# # Step 4: Build backend image
+# echo -e "\n\033[1;33m[4/8] Building backend Docker image...\033[0m"
+# docker build -f Dockerfile.backend -t ${BACKEND_IMAGE}:latest . > /dev/null 2>&1
+# if [ $? -eq 0 ]; then
+#     echo -e "  \033[1;32m✓ Backend image built: ${BACKEND_IMAGE}:latest\033[0m"
+# else
+#     echo -e "  \033[1;31m✗ Backend build failed\033[0m"
+#     exit 1
+# fi
 
 # Step 5: Build frontend image
 if [ "$SKIP_FRONTEND" = false ]; then
@@ -133,42 +133,42 @@ else
     echo -e "\n\033[1;33m[5/8] Skipping frontend build (--skip-frontend flag)\033[0m"
 fi
 
-# Step 6: Push backend to ECR
-if [ "$SKIP_ECR" = false ]; then
-    echo -e "\n\033[1;33m[6/8] Pushing backend to ECR...\033[0m"
+# # Step 6: Push backend to ECR
+# if [ "$SKIP_ECR" = false ]; then
+#     echo -e "\n\033[1;33m[6/8] Pushing backend to ECR...\033[0m"
     
-    # Login to ECR
-    echo -e "  \033[0;90m→ Logging into ECR...\033[0m"
-    aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        echo -e "  \033[1;32m✓ ECR login successful\033[0m"
-    else
-        echo -e "  \033[1;31m✗ ECR login failed - check AWS credentials\033[0m"
-        exit 1
-    fi
+#     # Login to ECR
+#     echo -e "  \033[0;90m→ Logging into ECR...\033[0m"
+#     aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO > /dev/null 2>&1
+#     if [ $? -eq 0 ]; then
+#         echo -e "  \033[1;32m✓ ECR login successful\033[0m"
+#     else
+#         echo -e "  \033[1;31m✗ ECR login failed - check AWS credentials\033[0m"
+#         exit 1
+#     fi
     
-    # Tag image
-    echo -e "  \033[0;90m→ Tagging image...\033[0m"
-    docker tag ${BACKEND_IMAGE}:latest ${ECR_REPO}:backend-latest
-    if [ $? -eq 0 ]; then
-        echo -e "  \033[1;32m✓ Image tagged\033[0m"
-    else
-        echo -e "  \033[1;31m✗ Image tagging failed\033[0m"
-        exit 1
-    fi
+#     # Tag image
+#     echo -e "  \033[0;90m→ Tagging image...\033[0m"
+#     docker tag ${BACKEND_IMAGE}:latest ${ECR_REPO}:backend-latest
+#     if [ $? -eq 0 ]; then
+#         echo -e "  \033[1;32m✓ Image tagged\033[0m"
+#     else
+#         echo -e "  \033[1;31m✗ Image tagging failed\033[0m"
+#         exit 1
+#     fi
     
-    # Push to ECR
-    echo -e "  \033[0;90m→ Pushing to ECR (this may take a few minutes)...\033[0m"
-    docker push ${ECR_REPO}:backend-latest > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        echo -e "  \033[1;32m✓ Backend pushed to ECR: ${ECR_REPO}:backend-latest\033[0m"
-    else
-        echo -e "  \033[1;31m✗ ECR push failed\033[0m"
-        exit 1
-    fi
-else
-    echo -e "\n\033[1;33m[6/8] Skipping ECR push (--skip-ecr flag)\033[0m"
-fi
+#     # Push to ECR
+#     echo -e "  \033[0;90m→ Pushing to ECR (this may take a few minutes)...\033[0m"
+#     docker push ${ECR_REPO}:backend-latest > /dev/null 2>&1
+#     if [ $? -eq 0 ]; then
+#         echo -e "  \033[1;32m✓ Backend pushed to ECR: ${ECR_REPO}:backend-latest\033[0m"
+#     else
+#         echo -e "  \033[1;31m✗ ECR push failed\033[0m"
+#         exit 1
+#     fi
+# else
+#     echo -e "\n\033[1;33m[6/8] Skipping ECR push (--skip-ecr flag)\033[0m"
+# fi
 
 # Step 7: Deploy frontend
 if [ "$SKIP_FRONTEND" = false ]; then
@@ -213,41 +213,3 @@ if [ "$SKIP_FRONTEND" = false ]; then
 else
     echo -e "\n\033[1;33m[7/8] Skipping frontend deployment (--skip-frontend flag)\033[0m"
 fi
-
-# Step 8: Summary
-echo -e "\n\033[1;33m[8/8] Deployment Summary\033[0m"
-echo "========================================"
-
-if [ "$SKIP_ECR" = false ]; then
-    echo "Backend:  Built and pushed to ECR"
-else
-    echo "Backend:  Built locally (not pushed to ECR)"
-fi
-
-if [ "$SKIP_FRONTEND" = false ]; then
-    if [ -n "$EC2_IP" ]; then
-        echo "Frontend: Files uploaded to EC2"
-    else
-        echo "Frontend: Running locally"
-    fi
-else
-    echo "Frontend: Skipped"
-fi
-
-if [ "$SKIP_ECR" = false ]; then
-    echo -e "\n\033[1;33mNext steps:\033[0m"
-    echo "  1. Go to ECS Console"
-    echo "  2. Update service → Force new deployment"
-    echo "  3. Wait 2-3 minutes for tasks to restart"
-    echo "  4. Check logs in CloudWatch"
-fi
-
-if [ "$SKIP_FRONTEND" = false ] && [ -z "$EC2_IP" ]; then
-    echo -e "\n\033[1;33mLocal frontend:\033[0m"
-    echo -e "  URL: \033[1;36mhttp://localhost\033[0m"
-    echo "  Logs: docker-compose -f docker-compose-frontend-ec2.yml logs -f"
-    echo "  Stop: docker-compose -f docker-compose-frontend-ec2.yml down"
-fi
-
-echo -e "\n\033[1;32m✓ Deployment complete!\033[0m"
-echo -e "========================================\n"
