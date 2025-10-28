@@ -1,7 +1,7 @@
 import { receiveRenderJobs, deleteRenderJob, getQueueDepth } from './queue.js'
 import { buildFfmpegCommand, execFfmpegWithProgress } from './video.js'
 import { presignDownload, presignUpload, uploadToS3 } from './s3.js'
-import { saveUserJob, getUserJob } from './storage.js'
+import { saveUserJob } from './storage.js'
 import config from './config.js'
 import fs from 'fs'
 import path from 'path'
