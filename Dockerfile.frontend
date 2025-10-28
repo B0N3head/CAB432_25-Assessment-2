@@ -1,0 +1,64 @@
+# Frontend-only Dockerfile for EC2
+# This container ONLY serves the React SPA (no backend API)
+
+# Stage 1: Build the React client
+FROM node:20-bookworm-slim AS build
+
+WORKDIR /app
+
+# Copy client dependencies
+COPY client/package.json client/package-lock.json ./
+RUN npm ci
+
+# Copy client source and environment config
+COPY client ./
+
+# Copy production environment file
+COPY client/.env.production .env
+
+# Build the React app (will use .env.production)
+RUN npm run build
+
+# Stage 2: Serve with nginx (lightweight and efficient for static files)
+FROM nginx:alpine
+
+# Copy built React app to nginx html directory
+COPY --from=build /app/dist /usr/share/nginx/html
+
+# Custom nginx configuration for SPA routing
+RUN echo 'server { \
+    listen 80; \
+    server_name _; \
+    root /usr/share/nginx/html; \
+    index index.html; \
+    \
+    # Gzip compression \
+    gzip on; \
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript; \
+    \
+    # SPA routing - serve index.html for all routes \
+    location / { \
+        try_files $uri $uri/ /index.html; \
+    } \
+    \
+    # Health check endpoint \
+    location /health { \
+        access_log off; \
+        return 200 "healthy\\n"; \
+        add_header Content-Type text/plain; \
+    } \
+    \
+    # Cache static assets \
+    location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ { \
+        expires 1y; \
+        add_header Cache-Control "public, immutable"; \
+    } \
+}' > /etc/nginx/conf.d/default.conf
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost/health || exit 1
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

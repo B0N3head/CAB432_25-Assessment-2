@@ -1,0 +1,32 @@
+# Backend-only Dockerfile for ECS
+# This container ONLY runs the Express API server (no frontend files)
+
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+
+# Install ffmpeg for video rendering
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ffmpeg ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy server dependencies
+COPY server/package.json server/package-lock.json ./
+RUN npm ci --omit=dev
+
+# Copy server source code
+COPY server/src ./src
+COPY server/build-info.json ./build-info.json
+
+# Environment configuration
+ENV NODE_ENV=production \
+    PORT=3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -f http://localhost:3000/api/v1/health || exit 1
+
+EXPOSE 3000
+
+# Run backend server
+CMD ["node", "src/index.js"]
