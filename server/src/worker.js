@@ -35,8 +35,7 @@ async function processRenderJob(message) {
 
     try {
         // Update job status to "processing"
-        await saveUserJob(username, {
-            id: jobId,
+        await saveUserJob(username, jobId, {
             projectId,
             ownerId: userId,
             status: 'processing',
@@ -60,28 +59,27 @@ async function processRenderJob(message) {
 
         // Build FFmpeg command
         console.log(`[${WORKER_ID}] Building FFmpeg command...`)
-        const ffmpegCmd = buildFfmpegCommand(files, timeline, outputPath, {
-            width,
-            height,
-            preset,
-            format: 'mp4'
+        
+        // Build project object for FFmpeg command generation
+        const project = {
+            id: projectId,
+            width: width || 1920,
+            height: height || 1080,
+            fps: 30,
+            tracks: timeline || [],
+            fitMode: 'fit-in'
+        }
+
+        const ffmpegArgs = await buildFfmpegCommand(project, files, {
+            preset: preset || 'crispstream',
+            renditions: renditions || ['1080p']
         })
 
         console.log(`[${WORKER_ID}] Starting FFmpeg render...`)
-        console.log(`   Command: ${ffmpegCmd.slice(0, 200)}...`)
+        console.log(`   FFmpeg args: ${ffmpegArgs.join(' ').slice(0, 200)}...`)
 
         // Execute FFmpeg with progress tracking
-        const result = await execFfmpegWithProgress(ffmpegCmd, async (progress) => {
-            // Update job progress in database
-            await saveUserJob(username, {
-                id: jobId,
-                projectId,
-                ownerId: userId,
-                status: 'processing',
-                progress: Math.round(progress * 100),
-                workerId: WORKER_ID
-            })
-        })
+        const result = await execFfmpegWithProgress(ffmpegArgs, outputPath, jobId)
 
         console.log(`[${WORKER_ID}] FFmpeg completed successfully (exit code ${result.code})`)
 
@@ -112,8 +110,7 @@ async function processRenderJob(message) {
         const completedAt = Date.now()
         const duration = Math.round((completedAt - startTime) / 1000)
 
-        await saveUserJob(username, {
-            id: jobId,
+        await saveUserJob(username, jobId, {
             projectId,
             ownerId: userId,
             status: 'completed',
@@ -142,8 +139,7 @@ async function processRenderJob(message) {
 
         // Update job status to "failed"
         try {
-            await saveUserJob(username, {
-                id: jobId,
+            await saveUserJob(username, jobId, {
                 projectId,
                 ownerId: userId,
                 status: 'failed',
