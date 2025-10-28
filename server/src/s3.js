@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import config from './config.js'
+import fs from 'fs'
 
 let s3
 function getS3() {
@@ -52,4 +53,27 @@ export async function presignDownload({ key, expires = 900 }) {
   const cmd = new GetObjectCommand({ Bucket: config.s3.bucket, Key: key })
   const url = await getSignedUrl(getS3(), cmd, { expiresIn: expires })
   return { url }
+}
+
+export async function uploadToS3({ key, filePath, contentType }) {
+  console.log('Uploading file to S3:', { key, filePath, contentType, bucket: config.s3.bucket })
+  try {
+    const fileContent = fs.readFileSync(filePath)
+    const cmd = new PutObjectCommand({
+      Bucket: config.s3.bucket,
+      Key: key,
+      Body: fileContent,
+      ContentType: contentType,
+      Metadata: {
+        'upload-timestamp': new Date().toISOString(),
+        'content-type': contentType
+      }
+    })
+    await getS3().send(cmd)
+    console.log('File uploaded successfully to S3:', key)
+    return { bucket: config.s3.bucket, key }
+  } catch (error) {
+    console.error('S3 upload error:', error)
+    throw error
+  }
 }
