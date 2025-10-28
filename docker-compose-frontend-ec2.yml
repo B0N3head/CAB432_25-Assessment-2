@@ -10,26 +10,34 @@ services:
     container_name: video-editor-frontend
     ports:
       - "80:80"
-      - "443:443"  # If you want HTTPS later
+      - "443:443"
     restart: unless-stopped
-    
+
     # Environment variables (for nginx configuration if needed)
     environment:
       - BACKEND_URL=http://group46-video-editor-1562782604.ap-southeast-2.elb.amazonaws.com
-    
+
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost/health",
+        ]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
-    
+
     # Resource limits (EC2 t3.medium has 2 vCPU, 4GB RAM)
     deploy:
       resources:
         limits:
-          cpus: '1.5'
+          cpus: "1.5"
           memory: 2G
         reservations:
-          cpus: '0.5'
+          cpus: "0.5"
           memory: 512M

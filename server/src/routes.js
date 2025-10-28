@@ -12,6 +12,7 @@ import config from './config.js'
 import { authMiddlewareCognito } from './cognito.js'
 import { presignUpload, presignDownload } from './s3.js'
 import { cacheGet, cacheSet } from './cache.js'
+import { enqueueRenderJob, isQueueConfigured, getQueueDepth, getDLQDepth } from './queue.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -30,11 +31,11 @@ function getVersionInfo() {
   let buildTime = new Date().toISOString()
   let gitHash = ''
   let deployDate = ''
-  
+
   try {
     // Try build-info.json first (created by update-version script)
     const buildInfo = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build-info.json'), 'utf8'))
-    
+
     // Support both old and new format
     if (buildInfo.serverVersion && buildInfo.clientVersion) {
       // New format with separate versions
@@ -45,7 +46,7 @@ function getVersionInfo() {
       serverVersion = buildInfo.version
       clientVersion = buildInfo.version
     }
-    
+
     buildTime = buildInfo.buildTime || buildTime
     gitHash = buildInfo.gitHash || ''
     deployDate = buildInfo.deployDate || ''
@@ -54,23 +55,23 @@ function getVersionInfo() {
     try {
       const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
       serverVersion = pkg.version || serverVersion
-    } catch {}
+    } catch { }
   }
-  
+
   return { serverVersion, clientVersion, buildTime, gitHash, deployDate }
 }
 
 // Health check endpoint (used by Docker healthcheck)
-router.get('/health', (_, res)=> {
-  res.json({ 
-    status: 'healthy', 
+router.get('/health', (_, res) => {
+  res.json({
+    status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
   })
 })
 
 // Dedicated version endpoint
-router.get('/version', (_, res)=> {
+router.get('/version', (_, res) => {
   const versionInfo = getVersionInfo()
   res.json({
     server: {
@@ -87,7 +88,7 @@ router.get('/version', (_, res)=> {
   })
 })
 
-router.get('/config', (_, res)=> {
+router.get('/config', (_, res) => {
   const versionInfo = getVersionInfo()
 
   res.json({
@@ -98,20 +99,20 @@ router.get('/config', (_, res)=> {
     deployDate: versionInfo.deployDate,
     region: config.region,
     features: config.features,
-    cognito: { 
-      domain: config.cognito.domain, 
-      clientId: config.cognito.clientId, 
+    cognito: {
+      domain: config.cognito.domain,
+      clientId: config.cognito.clientId,
       userPoolId: !!config.cognito.userPoolId ? 'configured' : '',
       redirectUri: config.cognito.redirectUri || '',
       hasClientSecret: !!config.cognito.clientSecret
     },
-    s3: { 
-      bucket: config.s3.bucket, 
-      prefixes: { 
-        uploads: config.s3.uploadsPrefix, 
-        outputs: config.s3.outputsPrefix, 
-        thumbs: config.s3.thumbsPrefix 
-      } 
+    s3: {
+      bucket: config.s3.bucket,
+      prefixes: {
+        uploads: config.s3.uploadsPrefix,
+        outputs: config.s3.outputsPrefix,
+        thumbs: config.s3.thumbsPrefix
+      }
     },
     secretsManager: {
       enabled: config.features.useSecretsManager,
@@ -125,11 +126,11 @@ router.get('/config', (_, res)=> {
   })
 })
 
-router.get('/preview', auth, async (req,res)=> {
+router.get('/preview', auth, async (req, res) => {
   try {
     const { fileId, h = 360 } = req.query
     if (!fileId) return res.status(400).json({ error: 'fileId required' })
-    
+
     let f
     if (req.user.role === 'admin') {
       f = await getFileForAdmin(fileId)
@@ -138,9 +139,9 @@ router.get('/preview', auth, async (req,res)=> {
     }
     //
     if (!f) return res.status(404).json({ error: 'not found' })
-    if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
+    if (req.user.role !== 'admin' && f.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
 
-    res.setHeader('Content-Type','video/mp4')
+    res.setHeader('Content-Type', 'video/mp4')
     const height = Math.max(120, parseInt(h))
     // Determine ffmpeg input (local file path or presigned S3 URL)
     let input = f.path
@@ -148,45 +149,45 @@ router.get('/preview', auth, async (req,res)=> {
       const { url } = await presignDownload({ key: f.s3Key })
       input = url
     }
-    if (!input) return res.status(404).json({ error:'input not available' })
-    const child = await import('child_process').then(m=> m.spawn('ffmpeg', [
-      '-hide_banner','-loglevel','error','-i', input,
+    if (!input) return res.status(404).json({ error: 'input not available' })
+    const child = await import('child_process').then(m => m.spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-i', input,
       // keep aspect ratio, constrain height; width auto (-2) preserves mod2
       '-vf', `scale=-2:${height}`,
       '-an',
-      '-c:v','libx264','-preset','veryfast','-crf','28',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
       // MP4 over stdout requires fragmented MP4, not faststart (which seeks)
-      '-movflags','empty_moov+frag_keyframe+default_base_moof',
+      '-movflags', 'empty_moov+frag_keyframe+default_base_moof',
       // shorter GOP improves fragmenting but increases bitrate a bit
-      '-g','60','-keyint_min','60',
-      '-f','mp4','-'
-    ], { stdio:['ignore','pipe','inherit'] }))
+      '-g', '60', '-keyint_min', '60',
+      '-f', 'mp4', '-'
+    ], { stdio: ['ignore', 'pipe', 'inherit'] }))
     child.stdout.pipe(res)
-    child.on('close', ()=> res.end())
+    child.on('close', () => res.end())
   } catch (e) {
     console.error('preview error', e)
-    res.status(500).json({ error:'preview failed' })
+    res.status(500).json({ error: 'preview failed' })
   }
 })
 
 // ---- Auth ----
 // Legacy login only used in local dev without Cognito
-router.post('/auth/login', (req,res)=> {
+router.post('/auth/login', (req, res) => {
   const { username, password } = req.body || {}
-  const u = users.find(u=> u.username===username && u.password===password)
-  if (!u) return res.status(401).json({ error:'Invalid credentials' })
+  const u = users.find(u => u.username === username && u.password === password)
+  if (!u) return res.status(401).json({ error: 'Invalid credentials' })
   const token = signToken({ id: u.id, username: u.username, role: u.role })
   res.json({ token })
 })
 
 // ---- Multer upload to /data/uploads ----
 const storage = multer.diskStorage({
-  destination: (req, file, cb)=> {
+  destination: (req, file, cb) => {
     const dest = path.join(__dirname, '..', 'data', 'uploads', req.user?.id || 'public')
-    fs.mkdirSync(dest, { recursive:true })
+    fs.mkdirSync(dest, { recursive: true })
     cb(null, dest)
   },
-  filename: (req, file, cb)=> {
+  filename: (req, file, cb) => {
     const id = uuidv4()
     const ext = path.extname(file.originalname)
     cb(null, `${id}${ext}`)
@@ -194,7 +195,7 @@ const storage = multer.diskStorage({
 })
 
 // Configure multer with strict limits to prevent server hangs
-const upload = multer({ 
+const upload = multer({
   storage,
   limits: {
     fileSize: 100 * 1024 * 1024, // 100MB max file size
@@ -211,7 +212,7 @@ const upload = multer({
       'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
       'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp3', 'audio/mp4'
     ]
-    
+
     if (allowedMimeTypes.includes(file.mimetype)) {
       cb(null, true)
     } else {
@@ -221,14 +222,14 @@ const upload = multer({
 })
 
 // ---- Files ----
-router.get('/files', auth, async (req,res)=> {
+router.get('/files', auth, async (req, res) => {
   try {
-    const { page=1, limit=50 } = req.query
+    const { page = 1, limit = 50 } = req.query
     const p = parseInt(page), l = parseInt(limit)
     const key = `files:${req.user.id}:${p}:${l}`
     const cached = await cacheGet(key)
     if (cached) return res.json(cached)
-    
+
     // Get files based on user role
     let allItems
     if (req.user.role === 'admin') {
@@ -236,13 +237,13 @@ router.get('/files', auth, async (req,res)=> {
     } else {
       allItems = await getUserFiles(req.user.username || req.user.id)
     }
-    
+
     // Filter files for ownership (admin sees all, users see only their own)
-    const items = allItems.filter(f=> req.user.role==='admin' || f.ownerId===req.user.id)
-    const slice = items.slice((p-1)*l, p*l)
-    const payload = { items: slice, total: items.length, page:p, limit:l }
+    const items = allItems.filter(f => req.user.role === 'admin' || f.ownerId === req.user.id)
+    const slice = items.slice((p - 1) * l, p * l)
+    const payload = { items: slice, total: items.length, page: p, limit: l }
     res.json(payload)
-    cacheSet(key, payload, 120).catch(()=>{})
+    cacheSet(key, payload, 120).catch(() => { })
   } catch (error) {
     console.error('Error getting files:', error)
     res.status(500).json({ error: 'Failed to get files' })
@@ -258,34 +259,34 @@ router.post('/files', auth, (req, res, next) => {
         // Handle specific multer errors
         switch (err.code) {
           case 'LIMIT_FILE_SIZE':
-            return res.status(413).json({ 
-              error: 'File too large', 
+            return res.status(413).json({
+              error: 'File too large',
               message: 'File size cannot exceed 100MB',
               code: 'FILE_TOO_LARGE'
             })
           case 'LIMIT_FILE_COUNT':
-            return res.status(413).json({ 
-              error: 'Too many files', 
+            return res.status(413).json({
+              error: 'Too many files',
               message: 'Cannot upload more than 10 files at once',
               code: 'TOO_MANY_FILES'
             })
           case 'LIMIT_UNEXPECTED_FILE':
-            return res.status(400).json({ 
+            return res.status(400).json({
               error: 'Unexpected file field',
               message: 'Invalid file upload field',
               code: 'UNEXPECTED_FIELD'
             })
           default:
-            return res.status(400).json({ 
-              error: 'Upload error', 
+            return res.status(400).json({
+              error: 'Upload error',
               message: err.message,
               code: err.code
             })
         }
       } else {
         // Handle custom file filter errors
-        return res.status(400).json({ 
-          error: 'File validation failed', 
+        return res.status(400).json({
+          error: 'File validation failed',
           message: err.message,
           code: 'INVALID_FILE_TYPE'
         })
@@ -293,7 +294,7 @@ router.post('/files', auth, (req, res, next) => {
     }
     next()
   })
-}, async (req,res)=> {
+}, async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files uploaded' })
@@ -307,31 +308,31 @@ router.post('/files', auth, (req, res, next) => {
         id, ownerId: req.user.id, path: file.path, name: file.originalname, mimetype,
         url: `/media/uploads/${req.user.id}/${file.filename}`, createdAt: Date.now()
       }
-      
+
       // Optional: generate thumbnail for videos (with timeout)
       try {
         if (mimetype.startsWith('video')) {
           const thumb = path.join(__dirname, '..', 'data', 'thumbnails', `${id}.jpg`)
-          
+
           // Add timeout for thumbnail generation to prevent hanging
           const thumbnailPromise = generateThumbnail(file.path, thumb)
-          const timeout = new Promise((_, reject) => 
+          const timeout = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Thumbnail generation timeout')), 30000)
           )
-          
+
           await Promise.race([thumbnailPromise, timeout])
           fileRec.thumbnail = `/media/thumbnails/${id}.jpg`
-          
+
           // Add timeout for media probing
           const probePromise = probeMedia(file.path)
-          const probeTimeout = new Promise((_, reject) => 
+          const probeTimeout = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Media probe timeout')), 15000)
           )
-          
+
           const meta = await Promise.race([probePromise, probeTimeout])
           if (meta?.format?.duration) fileRec.duration = parseFloat(meta.format.duration)
         }
-      } catch (e) { 
+      } catch (e) {
         console.error('thumb/probe error for file', file.originalname, ':', e.message)
         // Continue processing even if thumbnail/probe fails
       }
@@ -339,12 +340,12 @@ router.post('/files', auth, (req, res, next) => {
       await saveUserFile(req.user.username, fileRec)
       saved.push(fileRec)
     }
-    
+
     console.log(`Successfully processed ${saved.length} files for user ${req.user.username}`)
     res.status(201).json({ items: saved })
   } catch (error) {
     console.error('Error processing file upload:', error)
-    
+
     // Clean up uploaded files if processing fails
     if (req.files) {
       req.files.forEach(file => {
@@ -357,33 +358,33 @@ router.post('/files', auth, (req, res, next) => {
         }
       })
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       error: 'Failed to process uploaded files',
-      message: error.message 
+      message: error.message
     })
   }
 })
 
 // S3 presign endpoints (used when client uploads directly to S3)
-router.post('/files/presign-upload', auth, async (req,res)=> {
+router.post('/files/presign-upload', auth, async (req, res) => {
   if (!config.features.useS3) return res.status(400).json({ error: 'S3 not configured' })
-  
+
   const { filename, contentType, fileSize } = req.body || {}
   if (!filename || !contentType) {
     return res.status(400).json({ error: 'filename and contentType required' })
   }
-  
+
   // Validate file size (100MB limit for S3 uploads too)
   const maxFileSize = 100 * 1024 * 1024 // 100MB
   if (fileSize && fileSize > maxFileSize) {
-    return res.status(413).json({ 
-      error: 'File too large', 
+    return res.status(413).json({
+      error: 'File too large',
       message: `File size (${Math.round(fileSize / 1024 / 1024)}MB) exceeds maximum allowed size (100MB)`,
       code: 'FILE_TOO_LARGE'
     })
   }
-  
+
   // Validate content type
   const allowedMimeTypes = [
     'video/mp4', 'video/avi', 'video/mov', 'video/quicktime', 'video/x-msvideo',
@@ -391,57 +392,57 @@ router.post('/files/presign-upload', auth, async (req,res)=> {
     'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
     'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp3', 'audio/mp4'
   ]
-  
+
   if (!allowedMimeTypes.includes(contentType)) {
-    return res.status(400).json({ 
-      error: 'Invalid file type', 
+    return res.status(400).json({
+      error: 'Invalid file type',
       message: `File type ${contentType} not allowed. Only video, audio, and image files are permitted.`,
       code: 'INVALID_FILE_TYPE'
     })
   }
-  
+
   const id = uuidv4()
   const ext = path.extname(filename)
   const key = `${config.s3.uploadsPrefix}${req.user.id}/${id}${ext}`
-  
-  console.log('Presign request:', { 
-    filename, 
-    contentType, 
-    key, 
+
+  console.log('Presign request:', {
+    filename,
+    contentType,
+    key,
     userId: req.user.id,
     fileSize: fileSize ? `${Math.round(fileSize / 1024 / 1024)}MB` : 'unknown'
   })
-  
+
   try {
     // Use shorter expiry for large files to prevent long-running uploads
     const expires = fileSize && fileSize > 50 * 1024 * 1024 ? 1800 : 900 // 30min for large files, 15min for small
     const signed = await presignUpload({ key, contentType, expires })
     res.json({ id, key, ...signed, maxFileSize })
-  } catch (e) { 
+  } catch (e) {
     console.error('Presign route error:', e)
-    res.status(500).json({ error: 'presign failed', detail: e.message }) 
+    res.status(500).json({ error: 'presign failed', detail: e.message })
   }
 })
 
 // After successful client upload to S3, register metadata
-router.post('/files/register', auth, async (req,res)=> {
+router.post('/files/register', auth, async (req, res) => {
   try {
     const { id, originalName, key, mimetype, duration } = req.body || {}
     if (!id || !key || !mimetype) return res.status(400).json({ error: 'id, key, mimetype required' })
-    
-    const rec = { 
-      id, 
-      ownerId: req.user.id, 
-      s3Key: key, 
-      name: originalName || id, 
-      mimetype, 
-      createdAt: Date.now() 
+
+    const rec = {
+      id,
+      ownerId: req.user.id,
+      s3Key: key,
+      name: originalName || id,
+      mimetype,
+      createdAt: Date.now()
     }
     if (duration) rec.duration = duration
-    
+
     // Save file using DynamoDB-aware storage
     await saveUserFile(req.user.username || req.user.id, rec)
-    
+
     console.log('File registered successfully:', rec.id)
     res.status(201).json(rec)
   } catch (error) {
@@ -451,30 +452,30 @@ router.post('/files/register', auth, async (req,res)=> {
 })
 
 // Generate a presigned download URL for a file
-router.get('/files/:id/presign-download', auth, async (req,res)=> {
+router.get('/files/:id/presign-download', auth, async (req, res) => {
   try {
     const f = await getUserFile(req.user.username || req.user.id, req.params.id)
     if (!f) return res.status(404).json({ error: 'not found' })
-    if (req.user.role!=='admin' && f.ownerId!==req.user.id) return res.status(403).json({ error:'forbidden' })
+    if (req.user.role !== 'admin' && f.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
     if (!f.s3Key || !config.features.useS3) return res.status(400).json({ error: 'not stored in S3' })
-    
+
     const { url } = await presignDownload({ key: f.s3Key })
     res.json({ url })
-  } catch (e) { 
+  } catch (e) {
     console.error('Error in presign-download:', e)
-    res.status(500).json({ error: 'presign failed' }) 
+    res.status(500).json({ error: 'presign failed' })
   }
 })
 
 // ---- Projects ----
-router.get('/projects', auth, async (req,res)=> {
+router.get('/projects', auth, async (req, res) => {
   try {
-    const { page=1, limit=50 } = req.query
+    const { page = 1, limit = 50 } = req.query
     const p = parseInt(page), l = parseInt(limit)
     const key = `projects:${req.user.id}:${p}:${l}`
     const cached = await cacheGet(key)
     if (cached) return res.json(cached)
-    
+
     // Get projects based on user role
     let userProjects
     if (req.user.role === 'admin') {
@@ -482,46 +483,46 @@ router.get('/projects', auth, async (req,res)=> {
     } else {
       userProjects = await getUserProjects(req.user.username || req.user.id)
     }
-    
+
     // Convert object to array if needed
     const projectsArray = Array.isArray(userProjects) ? userProjects : Object.values(userProjects || {})
-    
+
     // Filter projects for ownership (admin sees all, users see only their own)
-    const items = projectsArray.filter(p=> req.user.role==='admin' || p.ownerId===req.user.id)
-    const slice = items.slice((p-1)*l, p*l)
-    const payload = { items: slice, total: items.length, page:p, limit:l }
+    const items = projectsArray.filter(p => req.user.role === 'admin' || p.ownerId === req.user.id)
+    const slice = items.slice((p - 1) * l, p * l)
+    const payload = { items: slice, total: items.length, page: p, limit: l }
     res.json(payload)
-    cacheSet(key, payload, 120).catch(()=>{})
+    cacheSet(key, payload, 120).catch(() => { })
   } catch (error) {
     console.error('Error getting projects:', error)
     res.status(500).json({ error: 'Failed to get projects' })
   }
 })
 
-router.post('/projects', auth, async (req,res)=> {
+router.post('/projects', auth, async (req, res) => {
   try {
-    const { name, width=1920, height=1080, fps=30 } = req.body || {}
-    if (!name) return res.status(400).json({ error:'name required' })
-    
-    const proj = { 
-      id: uuidv4(), 
-      ownerId: req.user.id, 
-      name, 
-      width, 
-      height, 
+    const { name, width = 1920, height = 1080, fps = 30 } = req.body || {}
+    if (!name) return res.status(400).json({ error: 'name required' })
+
+    const proj = {
+      id: uuidv4(),
+      ownerId: req.user.id,
+      name,
+      width,
+      height,
       fps,
       fitMode: 'fit-in', // Default scaling mode: 'fit-in' (letterbox) or 'fit-out' (crop)
-      tracks:[
-        { id: uuidv4(), type: 'video', name:'V1', clips:[] },
-        { id: uuidv4(), type: 'audio', name:'A1', clips:[] },
-      ], 
-      createdAt: Date.now(), 
-      updatedAt: Date.now() 
+      tracks: [
+        { id: uuidv4(), type: 'video', name: 'V1', clips: [] },
+        { id: uuidv4(), type: 'audio', name: 'A1', clips: [] },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
     }
-    
+
     // Save project using DynamoDB-aware storage
     await saveUserProject(req.user.username || req.user.id, proj.id, proj)
-    
+
     console.log('Project created successfully:', proj.id)
     res.status(201).json(proj)
   } catch (error) {
@@ -530,12 +531,12 @@ router.post('/projects', auth, async (req,res)=> {
   }
 })
 
-router.get('/projects/:id', auth, async (req,res)=> {
+router.get('/projects/:id', auth, async (req, res) => {
   try {
     const projects = await getUserProjects(req.user.username)
     const projectId = req.params.id
     const proj = projects[projectId]
-    
+
     if (!proj) return res.status(404).json({ error: 'not found' })
     if (req.user.role !== 'admin' && proj.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
     res.json(proj)
@@ -545,27 +546,27 @@ router.get('/projects/:id', auth, async (req,res)=> {
   }
 })
 
-router.put('/projects/:id', auth, async (req,res)=> {
+router.put('/projects/:id', auth, async (req, res) => {
   try {
     const projects = await getUserProjects(req.user.username)
     const projectId = req.params.id
-    
+
     if (!projects[projectId]) {
       return res.status(404).json({ error: 'not found' })
     }
-    
+
     if (req.user.role !== 'admin' && projects[projectId].ownerId !== req.user.id) {
       return res.status(403).json({ error: 'forbidden' })
     }
-    
-    const updated = { 
-      ...projects[projectId], 
-      ...req.body, 
-      id: projectId, 
-      ownerId: projects[projectId].ownerId, 
-      updatedAt: Date.now() 
+
+    const updated = {
+      ...projects[projectId],
+      ...req.body,
+      id: projectId,
+      ownerId: projects[projectId].ownerId,
+      updatedAt: Date.now()
     }
-    
+
     await saveUserProject(req.user.username, projectId, updated)
     res.json(updated)
   } catch (error) {
@@ -580,27 +581,27 @@ router.put('/projects/:id/fit-mode', auth, async (req, res) => {
     const projects = await getUserProjects(req.user.username)
     const projectId = req.params.id
     const { fitMode } = req.body
-    
+
     if (!projects[projectId]) {
       return res.status(404).json({ error: 'Project not found' })
     }
-    
+
     if (req.user.role !== 'admin' && projects[projectId].ownerId !== req.user.id) {
       return res.status(403).json({ error: 'Forbidden' })
     }
-    
+
     if (!fitMode || !['fit-in', 'fit-out'].includes(fitMode)) {
       return res.status(400).json({ error: 'Invalid fitMode. Must be "fit-in" or "fit-out"' })
     }
-    
-    const updated = { 
-      ...projects[projectId], 
+
+    const updated = {
+      ...projects[projectId],
       fitMode,
-      updatedAt: Date.now() 
+      updatedAt: Date.now()
     }
-    
+
     await saveUserProject(req.user.username, projectId, updated)
-    
+
     console.log(`Updated fit mode for project ${projectId} to ${fitMode}`)
     res.json({ fitMode: updated.fitMode, message: 'Fit mode updated successfully' })
   } catch (error) {
@@ -610,35 +611,39 @@ router.put('/projects/:id/fit-mode', auth, async (req, res) => {
 })
 
 // ---- Render ----
-router.post('/projects/:id/render', auth, async (req,res)=> {
+router.post('/projects/:id/render', auth, async (req, res) => {
   try {
     const projects = await getUserProjects(req.user.username)
     const files = await getUserFiles(req.user.username)
     const proj = projects[req.params.id]
-    
+
     console.log(`Render request for project ${req.params.id} by user ${req.user.username}`)
     console.log(`Found ${files.length} files for user`)
     console.log(`Project data:`, JSON.stringify(proj, null, 2))
-    
+
     if (!proj) return res.status(404).json({ error: 'not found' })
     if (req.user.role !== 'admin' && proj.ownerId !== req.user.id) return res.status(403).json({ error: 'forbidden' })
 
-    const { preset='crispstream', renditions=['1080p'] } = req.body || {}
+    const { preset = 'crispstream', renditions = ['1080p'] } = req.body || {}
+
+    // Check if SQS queue is configured
+    const useQueue = isQueueConfigured()
+    console.log(`Render mode: ${useQueue ? 'ASYNC (SQS Queue)' : 'SYNC (Direct)'}`)
 
     // Prepare files for rendering - handle both local and S3 files
     const processedFiles = []
     const tempFiles = [] // Track temp files for cleanup
-    
+
     for (const file of files) {
       let filePath
-      
+
       if (file.s3Key && config.features.useS3) {
         // S3 file - generate presigned URL with shorter expiry to avoid URL length issues
         try {
           const signed = await presignDownload({ key: file.s3Key, expiresIn: 1800 }) // 30 minutes
           filePath = signed.url
           console.log(`Using presigned URL for file ${file.id}: ${file.s3Key}`)
-          
+
           // Validate URL length (ffmpeg may have issues with very long URLs)
           if (filePath.length > 2000) {
             console.warn(`Presigned URL is very long (${filePath.length} chars), this may cause ffmpeg issues`)
@@ -654,33 +659,90 @@ router.post('/projects/:id/render', auth, async (req,res)=> {
         console.warn(`File ${file.id} has no path or s3Key, skipping`)
         continue
       }
-      
+
       processedFiles.push({
         ...file,
         path: filePath
       })
     }
 
+    // Generate job ID
+    const jobId = uuidv4()
+
+    // ASYNC MODE: Enqueue to SQS
+    if (useQueue) {
+      try {
+        await enqueueRenderJob({
+          jobId,
+          projectId: proj.id,
+          userId: req.user.id,
+          username: req.user.username,
+          files: processedFiles,
+          timeline: proj.timeline || [],
+          preset,
+          renditions,
+          width: proj.width || 1920,
+          height: proj.height || 1080
+        })
+
+        // Create initial job record
+        const job = {
+          id: jobId,
+          projectId: proj.id,
+          ownerId: req.user.id,
+          status: 'queued',
+          progress: 0,
+          createdAt: Date.now()
+        }
+        await saveUserJob(req.user.username, job)
+
+        console.log(`✅ Job ${jobId} enqueued successfully`)
+
+        return res.status(202).json({
+          message: 'Render job queued',
+          jobId,
+          status: 'queued',
+          checkStatusAt: `/api/v1/jobs/${jobId}`
+        })
+      } catch (queueError) {
+        console.error('Failed to enqueue job, falling back to sync rendering:', queueError)
+        // Fall through to sync rendering
+      }
+    }
+
+    // SYNC MODE: Direct rendering (fallback or when queue not configured)
+    console.log('⚠️  Using synchronous rendering (queue not available)')
+
     // Build ffmpeg command with processed files
     const cmd = await buildFfmpegCommand(proj, processedFiles, { preset, renditions })
 
     // Output path
-    const outId = uuidv4()
-    const outName = `${outId}.mp4`
+    const outName = `${jobId}.mp4`
     const outPath = path.join(__dirname, '..', 'data', 'outputs', outName)
 
     try {
       console.log('ffmpeg args:', cmd.join(' '))
       console.log('render output path:', outPath)
-      const { code, stderr } = await execFfmpegWithProgress(cmd, outPath, outId)
-      const job = { id: outId, projectId: proj.id, ownerId: proj.ownerId, output: `/media/outputs/${outName}`, createdAt: Date.now(), code, stderr }
-      
+      const { code, stderr } = await execFfmpegWithProgress(cmd, outPath, jobId)
+      const job = {
+        id: jobId,
+        projectId: proj.id,
+        ownerId: proj.ownerId,
+        output: `/media/outputs/${outName}`,
+        createdAt: Date.now(),
+        completedAt: Date.now(),
+        status: 'completed',
+        progress: 100,
+        code,
+        stderr
+      }
+
       // Save job to user's data
-      await saveUserJob(req.user.username, outId, job)
+      await saveUserJob(req.user.username, job)
       res.status(201).json({ output: job.output, job })
     } catch (e) {
       console.error('render error', e)
-      res.status(500).json({ error:'render failed', detail: e.message })
+      res.status(500).json({ error: 'render failed', detail: e.message })
     } finally {
       // Cleanup temp files
       for (const tempPath of tempFiles) {
@@ -700,13 +762,13 @@ router.post('/projects/:id/render', auth, async (req,res)=> {
 })
 
 // SSE progress endpoint
-router.get('/jobs/:id/events', auth, async (req,res)=> {
+router.get('/jobs/:id/events', auth, async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
   const id = req.params.id
   let alive = true
-  req.on('close', ()=> { alive = false })
+  req.on('close', () => { alive = false })
   const send = (event, data) => {
     if (!alive) return
     res.write(`event: ${event}\n`)
@@ -716,12 +778,91 @@ router.get('/jobs/:id/events', auth, async (req,res)=> {
   const state = await cacheGet(`job:${id}`)
   if (state) send('progress', state)
   // Heartbeat to keep connection alive
-  const iv = setInterval(async ()=> {
+  const iv = setInterval(async () => {
     if (!alive) { clearInterval(iv); return }
     const s = await cacheGet(`job:${id}`)
     if (s) send('progress', s)
     else send('ping', { t: Date.now() })
   }, 2000)
+})
+
+// Queue monitoring endpoints (admin only)
+router.get('/queue/status', auth, requireRole('admin'), async (req, res) => {
+  try {
+    if (!isQueueConfigured()) {
+      return res.json({
+        configured: false,
+        message: 'SQS queue not configured'
+      })
+    }
+
+    const [queueDepth, dlqDepth] = await Promise.all([
+      getQueueDepth(),
+      getDLQDepth()
+    ])
+
+    res.json({
+      configured: true,
+      renderQueue: queueDepth,
+      deadLetterQueue: dlqDepth,
+      timestamp: new Date().toISOString()
+    })
+  } catch (error) {
+    console.error('Failed to get queue status:', error)
+    res.status(500).json({ error: 'Failed to get queue status' })
+  }
+})
+
+// Get DLQ messages for inspection (admin only)
+router.get('/queue/dlq', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { receiveDLQMessages } = await import('./queue.js')
+    const messages = await receiveDLQMessages(10)
+
+    res.json({
+      count: messages.length,
+      messages: messages.map(msg => ({
+        messageId: msg.messageId,
+        jobId: msg.job.jobId,
+        projectId: msg.job.projectId,
+        username: msg.job.username,
+        failedAt: new Date(msg.sentTimestamp).toISOString(),
+        attempts: msg.approximateReceiveCount,
+        error: msg.job.error || 'Unknown error'
+      }))
+    })
+  } catch (error) {
+    console.error('Failed to get DLQ messages:', error)
+    res.status(500).json({ error: 'Failed to get DLQ messages' })
+  }
+})
+
+// Retry a failed job from DLQ (admin only)
+router.post('/queue/dlq/:messageId/retry', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { retryFailedJob, receiveDLQMessages } = await import('./queue.js')
+
+    // Find the message in DLQ
+    const messages = await receiveDLQMessages(10)
+    const message = messages.find(m => m.messageId === req.params.messageId)
+
+    if (!message) {
+      return res.status(404).json({ error: 'Message not found in DLQ' })
+    }
+
+    // Retry the job
+    const result = await retryFailedJob(message.receiptHandle, message.job)
+
+    res.json({
+      success: true,
+      jobId: result.jobId,
+      retryCount: result.retryCount,
+      message: 'Job re-queued for processing'
+    })
+  } catch (error) {
+    console.error('Failed to retry DLQ job:', error)
+    res.status(500).json({ error: 'Failed to retry job' })
+  }
 })
 
 export default router

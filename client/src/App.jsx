@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react'
 import { jwtDecode } from 'jwt-decode'
 
-const API = import.meta.env.VITE_API_BASE || 'http://localhost:3000'
+const API = 'https://videoeditor.cab432.com'
+console.log('API endpoint:', API)
 
 const secondsToTime = (s) => {
   const m = Math.floor(s / 60).toString().padStart(2, '0')
@@ -81,7 +82,7 @@ export default function App() {
         username: u['cognito:username'] || u.username || u.email || 'unknown',
         role: u.role || (
           u['cognito:groups'] && (u['cognito:groups'].includes('Admin') || u['cognito:groups'].includes('admin')) ? 'admin' :
-          u['cognito:groups'] && (u['cognito:groups'].includes('Editor') || u['cognito:groups'].includes('editor')) ? 'editor' : 'viewer'),
+            u['cognito:groups'] && (u['cognito:groups'].includes('Editor') || u['cognito:groups'].includes('editor')) ? 'editor' : 'viewer'),
         groups: u['cognito:groups'] || []
       }
       setUser(userData)
@@ -148,7 +149,7 @@ export default function App() {
     console.log('useS3 decision:', useS3)
     const selected = Array.from(e.target.files || [])
     if (selected.length === 0) return
-    
+
     // Client-side file size validation (100MB limit)
     const maxFileSize = 100 * 1024 * 1024 // 100MB
     for (const f of selected) {
@@ -157,19 +158,19 @@ export default function App() {
         return
       }
     }
-    
+
     if (!useS3) {
       try {
         const form = new FormData()
         for (const f of selected) form.append('files', f)
         const res = await fetch(`${API}/api/v1/files`, { method: 'POST', headers: { 'Authorization': token }, body: form })
-        
+
         if (!res.ok) {
           const error = await res.json()
           alert(`Upload failed: ${error.message || error.error}`)
           return
         }
-        
+
         fetchFiles()
       } catch (error) {
         console.error('Upload error:', error)
@@ -177,37 +178,37 @@ export default function App() {
       }
       return
     }
-    
+
     // S3 presigned path
     for (const f of selected) {
       try {
         console.log(`Uploading ${f.name} (${Math.round(f.size / 1024 / 1024)}MB)...`)
-        
+
         const presignRes = await fetch(`${API}/api/v1/files/presign-upload`, {
           method: 'POST',
           headers: { 'Authorization': token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            filename: f.name, 
+          body: JSON.stringify({
+            filename: f.name,
             contentType: f.type || 'application/octet-stream',
             fileSize: f.size
           })
         })
-        
+
         if (!presignRes.ok) {
           const error = await presignRes.json()
           alert(`Failed to get upload URL: ${error.message || error.error}`)
           return
         }
-        
+
         const presigned = await presignRes.json()
-        
+
         // Upload to S3 with progress tracking
-        const putRes = await fetch(presigned.url, { 
-          method: 'PUT', 
-          headers: { 'Content-Type': f.type || 'application/octet-stream' }, 
-          body: f 
+        const putRes = await fetch(presigned.url, {
+          method: 'PUT',
+          headers: { 'Content-Type': f.type || 'application/octet-stream' },
+          body: f
         })
-        
+
         if (!putRes.ok) {
           console.error('S3 upload failed:', putRes.status, putRes.statusText)
           alert(`Upload to S3 failed: ${putRes.status} ${putRes.statusText}`)
@@ -231,7 +232,7 @@ export default function App() {
                 }
                 video.src = URL.createObjectURL(f)
               }),
-              new Promise((_, reject) => 
+              new Promise((_, reject) =>
                 setTimeout(() => reject(new Error('Video metadata extraction timeout')), 10000)
               )
             ])
@@ -240,28 +241,28 @@ export default function App() {
             console.warn('Failed to extract video duration for', f.name, ':', e.message)
             // Skip duration extraction for problematic files
           }
-        }      const registerData = {
-        id: presigned.id,
-        originalName: f.name,
-        key: presigned.key,
-        mimetype: f.type
-      }
-      if (duration) registerData.duration = duration
+        } const registerData = {
+          id: presigned.id,
+          originalName: f.name,
+          key: presigned.key,
+          mimetype: f.type
+        }
+        if (duration) registerData.duration = duration
 
         const regRes = await fetch(`${API}/api/v1/files/register`, {
           method: 'POST',
           headers: { 'Authorization': token, 'Content-Type': 'application/json' },
           body: JSON.stringify(registerData)
         })
-        
+
         if (!regRes.ok) {
           const error = await regRes.json()
           alert(`Failed to register file: ${error.message || error.error}`)
           return
         }
-        
+
         console.log(`Successfully uploaded ${f.name}`)
-        
+
       } catch (error) {
         console.error('Upload error for file', f.name, ':', error)
         alert(`Upload failed for "${f.name}": ${error.message || 'Unknown error'}`)
